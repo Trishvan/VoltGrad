@@ -80,6 +80,15 @@ func (t *DynamicBitTensor) Get(i int) int64 {
 		raw |= (uint64(bitVal) << b)
 	}
 
+	if t.bitWidth == 64 {
+		return int64(raw)
+	}
+
+	mask := (uint64(1) << t.bitWidth) - 1
+	signBit := uint64(1) << (t.bitWidth - 1)
+	if raw&signBit != 0 {
+		return int64(raw | ^mask)
+	}
 	return int64(raw)
 }
 
