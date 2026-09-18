@@ -2,6 +2,7 @@ package vulkankernel
 
 import (
 	"fmt"
+	"math"
 )
 
 // DynamicBitTensor: bit-packed tensor with dynamic bit widening (DBW).
@@ -62,8 +63,33 @@ func (t *DynamicBitTensor) BitWidth() int {
 
 
 
+// BitsNeeded64 calculates the minimum bit width (2..64) required to represent signed integer v.
+func BitsNeeded64(v int64) int {
+	for w := 2; w < 64; w++ {
+		minVal, maxVal := MinMax64(w)
+		if v >= minVal && v <= maxVal {
+			return w
+		}
+	}
+	return 64
+}
 
+// BitsNeeded32 calculates the minimum bit width required to represent signed 32-bit integer v.
+func BitsNeeded32(v int32) int {
+	return BitsNeeded64(int64(v))
+}
 
+// MinMax64 returns the representable [min, max] range for signed integers of bit width W (2..64).
+func MinMax64(width int) (minVal, maxVal int64) {
+	if width <= 1 {
+		return 0, 0
+	}
+	if width >= 64 {
+		return math.MinInt64, math.MaxInt64
+	}
+	half := int64(1) << (width - 1)
+	return -half, half - 1
+}
 
 // Get reads the signed integer at linear index i as int64.
 func (t *DynamicBitTensor) Get(i int) int64 {
@@ -103,6 +129,11 @@ func (t *DynamicBitTensor) Set(i int, v int64) {
 		panic(fmt.Sprintf("DynamicBitTensor index %d out of bounds [0, %d)", i, t.length))
 	}
 
+	needed := BitsNeeded64(v)
+	if needed > t.bitWidth {
+		t.Widen(needed)
+	}
+
 	bitOffset := i * t.bitWidth
 	var raw uint64
 	if t.bitWidth == 64 {
@@ -130,6 +161,54 @@ func (t *DynamicBitTensor) SetInt32(i int, v int32) {
 	t.Set(i, int64(v))
 }
 
+// Add accumulates delta into element i, auto-widening if the result overflows.
+func (t *DynamicBitTensor) Add(i int, delta int64) int64 {
+	curr := t.Get(i)
+	res := curr + delta
+	t.Set(i, res)
+	return res
+}
 
+// Widen dynamically re-packs all elements into a wider bit-width buffer without precision loss.
+func (t *DynamicBitTensor) Widen(newBitWidth int) {
+	if newBitWidth <= t.bitWidth {
+		return
+	}
+	if newBitWidth > 64 {
+		newBitWidth = 64
+	}
+
+	oldValues := make([]int64, t.length)
+	for i := 0; i < t.length; i++ {
+		oldValues[i] = t.Get(i)
+	}
+
+	t.bitWidth = newBitWidth
+	totalBytes := (t.length*newBitWidth + 7) / 8
+	t.data = make([]byte, totalBytes)
+
+	for i, v := range oldValues {
+		bitOffset := i * newBitWidth
+		var raw uint64
+		if newBitWidth == 64 {
+			raw = uint64(v)
+		} else {
+			mask := (uint64(1) << newBitWidth) - 1
+			raw = uint64(v) & mask
+		}
+
+		for b := 0; b < newBitWidth; b++ {
+			byteIdx := (bitOffset + b) / 8
+			bitInByte := (bitOffset + b) % 8
+			bitVal := (raw >> b) & 1
+
+			if bitVal == 1 {
+				t.data[byteIdx] |= byte(1 << bitInByte)
+			} else {
+				t.data[byteIdx] &= ^byte(1 << bitInByte)
+			}
+		}
+	}
+}
 
 
