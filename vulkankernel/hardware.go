@@ -143,3 +143,90 @@ func (c *HardwareContext) Close() {
 	}
 }
 
+// GpuBuffer represents a host-coherent memory buffer directly accessible by both CPU and GPU.
+type GpuBuffer struct {
+	ctx    *HardwareContext
+	buffer uint64
+	memory uint64
+	size   uint64
+	mapped unsafe.Pointer
+}
+
+// CreateHostCoherentBuffer allocates a host-visible, host-coherent buffer.
+func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, error) {
+	bci := VkBufferCreateInfo{
+		SType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		Size:        size,
+		Usage:       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		SharingMode: VK_SHARING_MODE_EXCLUSIVE,
+	}
+	var buf uint64
+	r, _, _ := syscall.SyscallN(c.getProc("vkCreateBuffer"), c.device, uintptr(unsafe.Pointer(&bci)), 0, uintptr(unsafe.Pointer(&buf)))
+	if r != 0 {
+		return nil, fmt.Errorf("vkCreateBuffer error: %d", r)
+	}
+
+	var reqs VkMemoryRequirements
+	syscall.SyscallN(c.getProc("vkGetBufferMemoryRequirements"), c.device, uintptr(buf), uintptr(unsafe.Pointer(&reqs)))
+
+	memType := c.findMemoryType(reqs.MemoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if memType == -1 {
+		return nil, errors.New("host visible + coherent memory type unavailable")
+	}
+
+	allocInfo := VkMemoryAllocateInfo{
+		SType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		AllocationSize:  reqs.Size,
+		MemoryTypeIndex: uint32(memType),
+	}
+	var mem uint64
+	r, _, _ = syscall.SyscallN(c.getProc("vkAllocateMemory"), c.device, uintptr(unsafe.Pointer(&allocInfo)), 0, uintptr(unsafe.Pointer(&mem)))
+	if r != 0 {
+		return nil, fmt.Errorf("vkAllocateMemory error: %d", r)
+	}
+
+	syscall.SyscallN(c.getProc("vkBindBufferMemory"), c.device, uintptr(buf), uintptr(mem), 0)
+
+	var mapped unsafe.Pointer
+	syscall.SyscallN(c.getProc("vkMapMemory"), c.device, uintptr(mem), 0, uintptr(size), 0, uintptr(unsafe.Pointer(&mapped)))
+
+	return &GpuBuffer{
+		ctx:    c,
+		buffer: buf,
+		memory: mem,
+		size:   size,
+		mapped: mapped,
+	}, nil
+}
+
+// WriteInt32 copies a slice of int32 directly into the mapped memory.
+func (b *GpuBuffer) WriteInt32(data []int32) {
+	byteLen := len(data) * 4
+	if uint64(byteLen) > b.size {
+		panic("buffer overflow on WriteInt32")
+	}
+	src := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen)
+	dst := unsafe.Slice((*byte)(b.mapped), byteLen)
+	copy(dst, src)
+}
+
+// ReadInt32 reads back a slice of int32 from host-coherent mapped memory.
+func (b *GpuBuffer) ReadInt32(count int) []int32 {
+	return unsafe.Slice((*int32)(b.mapped), count)
+}
+
+// Free releases the buffer and unmaps memory.
+func (b *GpuBuffer) Free() {
+	if b.mapped != nil {
+		syscall.SyscallN(b.ctx.getProc("vkUnmapMemory"), b.ctx.device, uintptr(b.memory))
+		b.mapped = nil
+	}
+	if b.buffer != 0 {
+		syscall.SyscallN(b.ctx.getProc("vkDestroyBuffer"), b.ctx.device, uintptr(b.buffer), 0)
+		b.buffer = 0
+	}
+	if b.memory != 0 {
+		syscall.SyscallN(b.ctx.getProc("vkFreeMemory"), b.ctx.device, uintptr(b.memory), 0)
+		b.memory = 0
+	}
+}
