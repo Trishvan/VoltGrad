@@ -1,11 +1,15 @@
 package vulkankernel
 
 import (
+	_ "embed"
 	"errors"
 	"fmt"
 	"syscall"
 	"unsafe"
 )
+
+//go:embed train.spv
+var defaultShaderSPV []byte
 
 // HardwareContext owns the Vulkan instance, logical device and compute queue.
 type HardwareContext struct {
