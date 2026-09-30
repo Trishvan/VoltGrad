@@ -60,8 +60,23 @@ func (t *DynamicBitTensor) BitWidth() int {
 	return t.bitWidth
 }
 
+// MemoryBytes returns the actual physical bytes consumed by the packed bitstream.
+func (t *DynamicBitTensor) MemoryBytes() int {
+	return len(t.data)
+}
 
+// UncompressedInt32Bytes returns the memory bytes that standard 32-bit integers would require.
+func (t *DynamicBitTensor) UncompressedInt32Bytes() int {
+	return t.length * 4
+}
 
+// CompressionRatio returns the memory savings ratio over 32-bit storage.
+func (t *DynamicBitTensor) CompressionRatio() float64 {
+	if len(t.data) == 0 {
+		return 1.0
+	}
+	return float64(t.UncompressedInt32Bytes()) / float64(len(t.data))
+}
 
 // BitsNeeded64 calculates the minimum bit width (2..64) required to represent signed integer v.
 func BitsNeeded64(v int64) int {
@@ -211,4 +226,31 @@ func (t *DynamicBitTensor) Widen(newBitWidth int) {
 	}
 }
 
+// ToInt32Slice unrolls the packed tensor into a contiguous []int32 slice (for Vulkan buffer uploads).
+func (t *DynamicBitTensor) ToInt32Slice() []int32 {
+	out := make([]int32, t.length)
+	for i := 0; i < t.length; i++ {
+		out[i] = t.GetInt32(i)
+	}
+	return out
+}
 
+// FromInt32Slice copies contiguous values into the tensor and updates DBW bit-depth to the minimal fit.
+func (t *DynamicBitTensor) FromInt32Slice(values []int32) {
+	if len(values) != t.length {
+		panic(fmt.Sprintf("slice length %d does not match tensor length %d", len(values), t.length))
+	}
+	maxBits := 2
+	for _, v := range values {
+		b := BitsNeeded32(v)
+		if b > maxBits {
+			maxBits = b
+		}
+	}
+	if maxBits > t.bitWidth {
+		t.Widen(maxBits)
+	}
+	for i, v := range values {
+		t.SetInt32(i, v)
+	}
+}

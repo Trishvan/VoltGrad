@@ -180,7 +180,114 @@ func NewPipeline(hw *HardwareContext, customShaderSPV []byte) (*Pipeline, error)
 	}, nil
 }
 
+// EnsureBuffers ensures host-coherent input and output GPU storage buffers have capacity for count elements.
+func (p *Pipeline) EnsureBuffers(count int) error {
+	if p.bufferCap >= count && p.inputBuffer != nil && p.outputBuffer != nil {
+		return nil
+	}
 
+	if p.inputBuffer != nil {
+		p.inputBuffer.Free()
+		p.inputBuffer = nil
+	}
+	if p.outputBuffer != nil {
+		p.outputBuffer.Free()
+		p.outputBuffer = nil
+	}
+
+	// Double word size: 8 bytes per DataPoint (x: 4 bytes, y_true: 4 bytes)
+	inBytes := uint64(count * 8)
+	outBytes := uint64(count * 4)
+
+	var err error
+	p.inputBuffer, err = p.hw.CreateHostCoherentBuffer(inBytes)
+	if err != nil {
+		return fmt.Errorf("failed allocating input buffer: %w", err)
+	}
+
+	p.outputBuffer, err = p.hw.CreateHostCoherentBuffer(outBytes)
+	if err != nil {
+		return fmt.Errorf("failed allocating output buffer: %w", err)
+	}
+	p.bufferCap = count
+
+	// Bind to descriptor sets
+	bufferInfos := [2]VkDescriptorBufferInfo{
+		{Buffer: p.inputBuffer.buffer, Offset: 0, Range: inBytes},
+		{Buffer: p.outputBuffer.buffer, Offset: 0, Range: outBytes},
+	}
+	writes := [2]VkWriteDescriptorSet{
+		{
+			SType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			DstSet:          p.descSet,
+			DstBinding:      0,
+			DescriptorCount: 1,
+			DescriptorType:  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			PBufferInfo:     &bufferInfos[0],
+		},
+		{
+			SType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			DstSet:          p.descSet,
+			DstBinding:      1,
+			DescriptorCount: 1,
+			DescriptorType:  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			PBufferInfo:     &bufferInfos[1],
+		},
+	}
+	syscall.SyscallN(p.hw.getProc("vkUpdateDescriptorSets"), p.hw.device, 2, uintptr(unsafe.Pointer(&writes[0])), 0, 0)
+	return nil
+}
+
+// Dispatch executes the compute shader on the GPU across count elements with pushParam.
+func (p *Pipeline) Dispatch(inputPairs []int32, pushParam int32) ([]int32, error) {
+	count := len(inputPairs) / 2
+	if count == 0 {
+		return nil, fmt.Errorf("inputPairs must contain at least 1 pair (x, y)")
+	}
+	// Round up to multiple of 64
+	paddedCount := ((count + 63) / 64) * 64
+
+	if err := p.EnsureBuffers(paddedCount); err != nil {
+		return nil, err
+	}
+
+	// Upload inputs
+	p.inputBuffer.WriteInt32(inputPairs)
+
+	// Reset fence
+	syscall.SyscallN(p.hw.getProc("vkResetFences"), p.hw.device, 1, uintptr(unsafe.Pointer(&p.fence)))
+
+	// Record command buffer
+	beginInfo := VkCommandBufferBeginInfo{
+		SType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		Flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+	}
+	syscall.SyscallN(p.hw.getProc("vkBeginCommandBuffer"), p.cmdBuf, uintptr(unsafe.Pointer(&beginInfo)))
+	syscall.SyscallN(p.hw.getProc("vkCmdBindPipeline"), p.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(p.pipeline))
+	syscall.SyscallN(p.hw.getProc("vkCmdBindDescriptorSets"), p.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(p.pipeLayout), 0, 1, uintptr(unsafe.Pointer(&p.descSet)), 0, 0)
+
+	syscall.SyscallN(p.hw.getProc("vkCmdPushConstants"), p.cmdBuf, uintptr(p.pipeLayout), uintptr(VK_SHADER_STAGE_COMPUTE_BIT), 0, 4, uintptr(unsafe.Pointer(&pushParam)))
+
+	workgroups := uint32(paddedCount / 64)
+	syscall.SyscallN(p.hw.getProc("vkCmdDispatch"), p.cmdBuf, uintptr(workgroups), 1, 1)
+	syscall.SyscallN(p.hw.getProc("vkEndCommandBuffer"), p.cmdBuf)
+
+	submitInfo := VkSubmitInfo{
+		SType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		CommandBufferCount: 1,
+		PCommandBuffers:    &p.cmdBuf,
+	}
+	syscall.SyscallN(p.hw.getProc("vkQueueSubmit"), p.hw.queue, 1, uintptr(unsafe.Pointer(&submitInfo)), uintptr(p.fence))
+
+	// Wait for GPU fence (2-second timeout)
+	r, _, _ := syscall.SyscallN(p.hw.getProc("vkWaitForFences"), p.hw.device, 1, uintptr(unsafe.Pointer(&p.fence)), 1, uintptr(2000000000))
+	if r != 0 {
+		return nil, fmt.Errorf("Vulkan GPU compute execution timed out or failed: %d", r)
+	}
+
+	// Read outputs directly from host-coherent mapped memory
+	return p.outputBuffer.ReadInt32(count), nil
+}
 
 // Close releases all pipeline resources and descriptors.
 func (p *Pipeline) Close() {
