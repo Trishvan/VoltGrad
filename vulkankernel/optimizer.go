@@ -101,6 +101,14 @@ func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) 
 				newV := ((beta * oldV) + ((one - beta) * gradVal)) >> shift
 				v.Set(i, newV)
 				updateStep = (lr * newV) >> shift
+
+			case OptimizerAdamQ:
+				// bias-corrected moments (draft - sign path suspect)
+				oldV := v.Get(i)
+				newV := ((beta * oldV) + ((one - beta) * gradVal)) >> shift
+				v.Set(i, newV)
+				correction := one >> 3
+				updateStep = (lr * newV * correction) >> shift
 			}
 
 			// Weight decay (L2)
