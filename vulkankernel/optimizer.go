@@ -103,12 +103,18 @@ func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) 
 				updateStep = (lr * newV) >> shift
 
 			case OptimizerAdamQ:
-				// bias-corrected moments (draft - sign path suspect)
+				// Pure integer momentum approximation
 				oldV := v.Get(i)
 				newV := ((beta * oldV) + ((one - beta) * gradVal)) >> shift
 				v.Set(i, newV)
-				correction := one >> 3
-				updateStep = (lr * newV * correction) >> shift
+				// Signed directional step
+				sign := int64(0)
+				if newV > 0 {
+					sign = 1
+				} else if newV < 0 {
+					sign = -1
+				}
+				updateStep = (lr * sign) >> 1
 			}
 
 			// Weight decay (L2)
