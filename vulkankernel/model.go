@@ -1,5 +1,10 @@
 package vulkankernel
 
+import (
+	"fmt"
+	"math"
+)
+
 // Q16 fixed-point scale (1.0 := 1<<16).
 const (
 	Q16FractionalBits uint  = 16
@@ -88,3 +93,53 @@ func (c *ComputeContext) Pipeline() *Pipeline {
 	return c.pipeline
 }
 
+// ComputeLoss calculates loss and loss gradient for predictions given targets.
+func ComputeLoss(lossType LossType, preds, targets []int32, fractionalBits uint) (lossVal int32, gradLoss []int32, err error) {
+	if len(preds) != len(targets) {
+		return 0, nil, fmt.Errorf("predictions len %d != targets len %d", len(preds), len(targets))
+	}
+	n := len(preds)
+	gradLoss = make([]int32, n)
+	var totalLoss int64
+
+	scale := int64(1 << fractionalBits)
+
+	switch lossType {
+	case LossMSE:
+		for i := 0; i < n; i++ {
+			diff := int64(preds[i]) - int64(targets[i])
+			gradLoss[i] = int32(diff) // dL/dPred = 2*(pred - target) normalized
+			totalLoss += (diff * diff) >> fractionalBits
+		}
+		lossVal = int32(totalLoss / int64(n))
+
+	case LossBrierScore:
+		// Brier Score = sum((p_i - y_i)^2)
+		for i := 0; i < n; i++ {
+			diff := int64(preds[i]) - int64(targets[i])
+			gradLoss[i] = int32(diff)
+			totalLoss += (diff * diff) >> fractionalBits
+		}
+		lossVal = int32(totalLoss)
+
+	case LossCrossEntropy:
+		// Integer Softmax Cross-Entropy loss approximation
+		// grad = p_i - y_i
+		for i := 0; i < n; i++ {
+			diff := int64(preds[i]) - int64(targets[i])
+			gradLoss[i] = int32(diff)
+			if targets[i] > 0 {
+				// -log(p_target) approximated in fixed point
+				probClamped := int64(preds[i])
+				if probClamped < 1 {
+					probClamped = 1
+				}
+				negLog := int64(-math.Log(float64(probClamped)/float64(scale)) * float64(scale))
+				totalLoss += negLog
+			}
+		}
+		lossVal = int32(totalLoss)
+	}
+
+	return lossVal, gradLoss, nil
+}
