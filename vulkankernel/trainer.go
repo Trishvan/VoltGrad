@@ -34,7 +34,7 @@ type EpochMetrics struct {
 	ParamBitWidths  []int
 }
 
-// VulkanTrainingPipeline drives the model over Vulkan compute per epoch.
+// VulkanTrainingPipeline provides a model-agnostic GPU training runtime (like PyTorch CUDA).
 // The developer only writes their architecture (implementing ModelArchitecture) and provides data.
 // Dynamic Bit Widening (DBW) is monitored and applied automatically at every step.
 type VulkanTrainingPipeline struct {
@@ -67,7 +67,7 @@ func NewTrainingPipeline(config TrainingConfig, model ModelArchitecture) (*Vulka
 	}, nil
 }
 
-// Train runs epochs + batches against the supplied architecture.
+// Train executes the complete training loop over the user's custom architecture.
 func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32, targets [][]int32) ([]EpochMetrics, error) {
 	if len(inputs) != len(targets) {
 		return nil, fmt.Errorf("inputs count %d != targets count %d", len(inputs), len(targets))
@@ -81,7 +81,14 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 	ctx := NewComputeContext(p.pipeline)
 
 	if p.config.Verbose {
-		fmt.Printf("=== Vulkan Trainer | DBW active ===\n\n")
+		fmt.Printf("========================================================================\n")
+		fmt.Printf("   VULKAN TRAINING PIPELINE (CUDA-Equivalent for Go) with DBW\n")
+		fmt.Printf("========================================================================\n")
+		fmt.Printf(" Model Architecture: %s\n", model.Name())
+		fmt.Printf(" Samples: %d, Batch Size: %d, Epochs: %d\n", n, p.config.BatchSize, p.config.Epochs)
+		fmt.Printf(" Mandatory Dynamic Bit Widening (DBW): ACTIVE\n")
+		fmt.Printf(" Hardware Backend: Vulkan Host-Coherent Compute Engine\n")
+		fmt.Printf("========================================================================\n\n")
 	}
 
 	for epoch := 1; epoch <= p.config.Epochs; epoch++ {

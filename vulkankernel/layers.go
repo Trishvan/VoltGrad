@@ -5,14 +5,14 @@ type LinearLayer struct {
 	Name    string
 	InDim   int
 	OutDim  int
-	Weight  *DynamicBitTensor
+	Weight  *DynamicBitTensor // Shape: [OutDim, InDim]
 	GradW   *DynamicBitTensor
-	Bias    *DynamicBitTensor
+	Bias    *DynamicBitTensor // Shape: [OutDim]
 	GradBias *DynamicBitTensor
 	UseBias bool
 }
 
-// NewLinearLayer builds a packed linear layer.
+// NewLinearLayer creates a linear layer starting with initialBits (e.g. 2 bits).
 func NewLinearLayer(name string, inDim, outDim int, initialBits int, useBias bool) *LinearLayer {
 	if initialBits < 2 {
 		initialBits = 2
@@ -35,7 +35,7 @@ func NewLinearLayer(name string, inDim, outDim int, initialBits int, useBias boo
 	return l
 }
 
-// Forward: y = (W*x) >> shift + b.
+// Forward computes output = (W * x) >> shift + bias.
 func (l *LinearLayer) Forward(x []int32, shift uint) ([]int32, error) {
 	out, err := MatMulVec64(l.Weight, x, shift)
 	if err != nil {
@@ -49,7 +49,7 @@ func (l *LinearLayer) Forward(x []int32, shift uint) ([]int32, error) {
 	return out, nil
 }
 
-// Backward: dW, dX.
+// Backward calculates gradients dW and dX.
 func (l *LinearLayer) Backward(dOut []int32, x []int32, shift uint) ([]int32, error) {
 	if l.UseBias {
 		for i := 0; i < l.OutDim; i++ {
@@ -59,7 +59,7 @@ func (l *LinearLayer) Backward(dOut []int32, x []int32, shift uint) ([]int32, er
 	return MatMulVecBackward(dOut, x, l.Weight, l.GradW, shift)
 }
 
-// ZeroGrad.
+// ZeroGrad zeroes out gradient tensors.
 func (l *LinearLayer) ZeroGrad() {
 	for i := 0; i < l.GradW.Len(); i++ {
 		l.GradW.Set(i, 0)
@@ -71,7 +71,7 @@ func (l *LinearLayer) ZeroGrad() {
 	}
 }
 
-// InitWeightsIdentity: diagonal := scale (Q16), rest zero.
+// InitWeightsIdentity initializes diagonal elements to 1.0 (Q16) and others to 0.
 func (l *LinearLayer) InitWeightsIdentity(scale int32) {
 	for r := 0; r < l.OutDim; r++ {
 		for c := 0; c < l.InDim; c++ {

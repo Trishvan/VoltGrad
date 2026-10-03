@@ -5,7 +5,13 @@ import (
 	"math"
 )
 
-// DynamicBitTensor: bit-packed tensor with dynamic bit widening (DBW).
+// DynamicBitTensor represents an arbitrary bit-width signed integer tensor with Dynamic Bit Widening (DBW).
+// It stores weights, gradients, or activations packed into compact bitstreams.
+//
+// Whenever any parameter update or gradient accumulation exceeds the current bit-width representation
+// limit [-2^(W-1), 2^(W-1)-1], the tensor automatically and dynamically widens its bit allocation
+// (e.g., 2-bit -> 3-bit -> ... -> 16-bit -> 32-bit -> 64-bit) and re-packs the underlying raw bitstream
+// with zero clipping and zero quantization noise.
 type DynamicBitTensor struct {
 	shape    []int
 	length   int

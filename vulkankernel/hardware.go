@@ -11,7 +11,7 @@ import (
 //go:embed train.spv
 var defaultShaderSPV []byte
 
-// HardwareContext owns the Vulkan instance, logical device and compute queue.
+// HardwareContext encapsulates low-level Vulkan instance, device, and compute queues.
 type HardwareContext struct {
 	dll                   *syscall.LazyDLL
 	vkGetInstanceProcAddr *syscall.LazyProc
@@ -156,7 +156,7 @@ type GpuBuffer struct {
 	mapped unsafe.Pointer
 }
 
-// CreateHostCoherentBuffer allocates a host-visible, host-coherent buffer.
+// CreateHostCoherentBuffer allocates a host-visible, host-coherent buffer (Zero Copy).
 func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, error) {
 	bci := VkBufferCreateInfo{
 		SType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,

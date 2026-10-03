@@ -34,6 +34,14 @@ func DefaultOptimizerConfig() OptimizerConfig {
 	}
 }
 
+// DynamicBitOptimizer manages fixed-point integer parameter updates with mandatory Dynamic Bit Widening.
+//
+// Update Rule:
+//
+//	w_{i,j}(t+1) = w_{i,j}(t) - \lfloor \eta \cdot g_{i,j}(t) / 2^{Q_f} \rfloor
+//
+// If the updated weight w(t+1) exceeds the tensor's current bit-width, the DynamicBitTensor
+// automatically triggers DBW expansion without precision loss.
 type DynamicBitOptimizer struct {
 	config    OptimizerConfig
 	velocities [][]*DynamicBitTensor // Momentum velocity per parameter tensor
@@ -58,7 +66,8 @@ func NewDynamicBitOptimizer(config OptimizerConfig, model ModelArchitecture) *Dy
 	}
 }
 
-// Step: one packed pass over params/grads; returns DBW notes.
+// Step performs one optimization step over all model parameters and gradients.
+// Returns a summary of any DBW bit widening that occurred during the update.
 func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) {
 	params := model.Parameters()
 	grads := model.Gradients()

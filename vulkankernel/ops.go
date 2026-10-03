@@ -5,7 +5,9 @@ import (
 	"math"
 )
 
-// MatMulVec64: integer GEMV under Q-shift scaling.
+// MatMulVec64 performs integer matrix-vector multiplication:
+//
+//	out[i] = (sum_j W[i,j] * x[j]) >> shift
 func MatMulVec64(w *DynamicBitTensor, x []int32, shift uint) ([]int32, error) {
 	shape := w.Shape()
 	if len(shape) != 2 {

@@ -5,14 +5,15 @@ import (
 	"testing"
 )
 
-// ExampleMLPArchitecture: tiny 2-layer MLP used by the integration test.
+// ExampleMLPArchitecture demonstrates how ANY user defines their custom model architecture
+// in just a few lines of Go code without touching GPU drivers or quantization pipelines.
 type ExampleMLPArchitecture struct {
 	fc1 *LinearLayer
 	fc2 *LinearLayer
 }
 
 // NewExampleMLPArchitecture creates a 2-layer MLP: InDim (4) -> Hidden (8) -> OutDim (2).
-// Params start at 2 bits so DBW has to fire.
+// Parameters intentionally start at 2-bit storage to demonstrate Dynamic Bit Widening during training!
 func NewExampleMLPArchitecture() *ExampleMLPArchitecture {
 	return &ExampleMLPArchitecture{
 		fc1: NewLinearLayer("fc1", 4, 8, 2, true),
@@ -99,6 +100,7 @@ func TestVulkanTrainingPipelineWithDBW(t *testing.T) {
 	// 1. Initialize user custom architecture (starting with 2-bit weights!)
 	model := NewExampleMLPArchitecture()
 
+	// Initialize weights
 	model.fc1.InitWeightsIdentity(Q16One)
 	model.fc2.InitWeightsIdentity(Q16One)
 

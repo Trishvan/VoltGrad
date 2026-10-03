@@ -2,7 +2,7 @@ package vulkankernel
 
 import "unsafe"
 
-// Vulkan C-ABI mirrors (hand-ported subset of vulkan_core.h 1.3)
+// Vulkan structure types and enums
 const (
 	VK_STRUCTURE_TYPE_APPLICATION_INFO                  uint32 = 1
 	VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO              uint32 = 10

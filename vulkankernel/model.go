@@ -5,7 +5,7 @@ import (
 	"math"
 )
 
-// Q16 fixed-point scale (1.0 := 1<<16).
+// Q16One represents 1.0 in Q16 fixed-point (2^16 = 65,536).
 const (
 	Q16FractionalBits uint  = 16
 	Q16One            int32 = 1 << Q16FractionalBits
