@@ -2,6 +2,7 @@ package vulkankernel
 
 import (
 	"fmt"
+	"math"
 )
 
 // OptimizerType designates the parameter update strategy.
@@ -137,3 +138,13 @@ func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) 
 	return wideningNotices, nil
 }
 
+// LearningRateCosineDecay computes updated Q16 learning rate following a cosine schedule.
+func LearningRateCosineDecay(baseLRQ16 int32, epoch, maxEpochs int) int32 {
+	if epoch >= maxEpochs {
+		epoch = maxEpochs - 1
+	}
+	cosVal := math.Cos(math.Pi * float64(epoch) / float64(maxEpochs))
+	factor := 0.5 * (1.0 + cosVal)
+	decayed := float64(baseLRQ16) * (0.05 + 0.95*factor)
+	return int32(decayed)
+}
