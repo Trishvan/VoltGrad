@@ -1,4 +1,4 @@
-package vulkankernel
+package voltgrad
 
 import (
 	"fmt"

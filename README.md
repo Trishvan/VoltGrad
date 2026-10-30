@@ -10,54 +10,54 @@ Just like writing PyTorch models with CUDA in Python:
 
 ## 📁 Architecture Overview
 
-All code lives in this standalone folder `vulkankernel/` with **zero external dependencies** (pure Go standard library + Vulkan C-ABI):
+All code lives in this standalone folder `voltgrad/` with **zero external dependencies** (pure Go standard library + Vulkan C-ABI):
 
 | File | Purpose |
 | :--- | :--- |
-| [`tensor.go`](tensor.go) | `DynamicBitTensor` with mandatory Dynamic Bit Widening ($W \in [2, 64]$ bits), bit-packing, zero quantization clipping. |
-| [`model.go`](model.go) | `ModelArchitecture` interface (`Forward`, `Backward`, `Parameters`, `Gradients`) & `ComputeLoss` (MSE, Cross-Entropy, Brier). |
-| [`hardware.go`](hardware.go) | Direct Vulkan GPU discovery, logical device initialization, and host-coherent zero-copy memory mapping. |
-| [`pipeline.go`](pipeline.go) | Vulkan compute shader compilation, pipeline layouts, push constants, and dispatch execution. |
-| [`optimizer.go`](optimizer.go) | `DynamicBitOptimizer` implementing $w(t+1) = w(t) - \lfloor \eta \cdot g / 2^{Q_f} \rfloor$ with SGD, Momentum, Adam-Q, and auto-widening. |
-| [`layers.go`](layers.go) | Reusable building blocks (e.g. `LinearLayer`, MatMul, ReLU) with forward/backward differentiation. |
-| [`ops.go`](ops.go) | Fixed-point integer operations (MatMulVec64, Softmax, ReLU, activation backward passes). |
-| [`trainer.go`](trainer.go) | `VulkanTrainingPipeline` coordinating the training loop, epochs, batching, GPU dispatch, and DBW logging. |
-| [`pipeline_test.go`](pipeline_test.go) | Complete working example showing custom 2-layer MLP training with live DBW bit-depth expansion. |
+| [`tensor.go`](voltgrad/tensor.go) | `DynamicBitTensor` with mandatory Dynamic Bit Widening ($W \in [2, 64]$ bits), bit-packing, zero quantization clipping. |
+| [`model.go`](voltgrad/model.go) | `ModelArchitecture` interface (`Forward`, `Backward`, `Parameters`, `Gradients`) & `ComputeLoss` (MSE, Cross-Entropy, Brier). |
+| [`hardware.go`](voltgrad/hardware.go) | Direct Vulkan GPU discovery, logical device initialization, and host-coherent zero-copy memory mapping. |
+| [`pipeline.go`](voltgrad/pipeline.go) | Vulkan compute shader compilation, pipeline layouts, push constants, and dispatch execution. |
+| [`optimizer.go`](voltgrad/optimizer.go) | `DynamicBitOptimizer` implementing $w(t+1) = w(t) - \lfloor \eta \cdot g / 2^{Q_f} \rfloor$ with SGD, Momentum, Adam-Q, and auto-widening. |
+| [`layers.go`](voltgrad/layers.go) | Reusable building blocks (e.g. `LinearLayer`, MatMul, ReLU) with forward/backward differentiation. |
+| [`ops.go`](voltgrad/ops.go) | Fixed-point integer operations (MatMulVec64, Softmax, ReLU, activation backward passes). |
+| [`trainer.go`](voltgrad/trainer.go) | `VulkanTrainingPipeline` coordinating the training loop, epochs, batching, GPU dispatch, and DBW logging. |
+| [`pipeline_test.go`](voltgrad/pipeline_test.go) | Complete working example showing custom 2-layer MLP training with live DBW bit-depth expansion. |
 
 ---
 
 ## 🚀 Quickstart: Developer Writing a Custom Model
 
-Developers only define their struct implementing [`ModelArchitecture`](model.go):
+Developers only define their struct implementing [`ModelArchitecture`](voltgrad/model.go):
 
 ```go
 package main
 
 import (
-    "gotrain/vulkankernel"
+    "github.com/Trishvan/VoltGrad/voltgrad"
 )
 
 type MyCustomModel struct {
-    fc1 *vulkankernel.LinearLayer
-    fc2 *vulkankernel.LinearLayer
+    fc1 *voltgrad.LinearLayer
+    fc2 *voltgrad.LinearLayer
 }
 
 func NewMyCustomModel(inDim, hiddenDim, outDim int) *MyCustomModel {
     return &MyCustomModel{
         // Start weights at 2-bit! DBW will automatically expand bit-depth as gradients flow
-        fc1: vulkankernel.NewLinearLayer("fc1", inDim, hiddenDim, 2, true),
-        fc2: vulkankernel.NewLinearLayer("fc2", hiddenDim, outDim, 2, true),
+        fc1: voltgrad.NewLinearLayer("fc1", inDim, hiddenDim, 2, true),
+        fc2: voltgrad.NewLinearLayer("fc2", hiddenDim, outDim, 2, true),
     }
 }
 
 func (m *MyCustomModel) Name() string { return "MyCustomModel" }
 
-func (m *MyCustomModel) Parameters() []*vulkankernel.DynamicBitTensor {
-    return []*vulkankernel.DynamicBitTensor{m.fc1.Weight, m.fc1.Bias, m.fc2.Weight, m.fc2.Bias}
+func (m *MyCustomModel) Parameters() []*voltgrad.DynamicBitTensor {
+    return []*voltgrad.DynamicBitTensor{m.fc1.Weight, m.fc1.Bias, m.fc2.Weight, m.fc2.Bias}
 }
 
-func (m *MyCustomModel) Gradients() []*vulkankernel.DynamicBitTensor {
-    return []*vulkankernel.DynamicBitTensor{m.fc1.GradW, m.fc1.GradBias, m.fc2.GradW, m.fc2.GradBias}
+func (m *MyCustomModel) Gradients() []*voltgrad.DynamicBitTensor {
+    return []*voltgrad.DynamicBitTensor{m.fc1.GradW, m.fc1.GradBias, m.fc2.GradW, m.fc2.GradBias}
 }
 
 func (m *MyCustomModel) ZeroGrad() {
@@ -65,25 +65,25 @@ func (m *MyCustomModel) ZeroGrad() {
     m.fc2.ZeroGrad()
 }
 
-func (m *MyCustomModel) Forward(ctx *vulkankernel.ComputeContext, x []int32) ([]int32, error) {
-    h1, _ := m.fc1.Forward(x, vulkankernel.Q16FractionalBits)
-    h1Act := vulkankernel.ReLU(h1)
+func (m *MyCustomModel) Forward(ctx *voltgrad.ComputeContext, x []int32) ([]int32, error) {
+    h1, _ := m.fc1.Forward(x, voltgrad.Q16FractionalBits)
+    h1Act := voltgrad.ReLU(h1)
 
     ctx.SetScratch("x", x)
     ctx.SetScratch("h1", h1)
     ctx.SetScratch("h1Act", h1Act)
 
-    return m.fc2.Forward(h1Act, vulkankernel.Q16FractionalBits)
+    return m.fc2.Forward(h1Act, voltgrad.Q16FractionalBits)
 }
 
-func (m *MyCustomModel) Backward(ctx *vulkankernel.ComputeContext, dLoss []int32) error {
+func (m *MyCustomModel) Backward(ctx *voltgrad.ComputeContext, dLoss []int32) error {
     x, _ := ctx.GetScratch("x")
     h1, _ := ctx.GetScratch("h1")
     h1Act, _ := ctx.GetScratch("h1Act")
 
-    dH1Act, _ := m.fc2.Backward(dLoss, h1Act.([]int32), vulkankernel.Q16FractionalBits)
-    dH1 := vulkankernel.ReLUBackward(dH1Act, h1.([]int32))
-    m.fc1.Backward(dH1, x.([]int32), vulkankernel.Q16FractionalBits)
+    dH1Act, _ := m.fc2.Backward(dLoss, h1Act.([]int32), voltgrad.Q16FractionalBits)
+    dH1 := voltgrad.ReLUBackward(dH1Act, h1.([]int32))
+    m.fc1.Backward(dH1, x.([]int32), voltgrad.Q16FractionalBits)
     return nil
 }
 ```
@@ -94,11 +94,11 @@ func (m *MyCustomModel) Backward(ctx *vulkankernel.ComputeContext, dLoss []int32
 func main() {
     model := NewMyCustomModel(4, 8, 2)
 
-    config := vulkankernel.DefaultTrainingConfig()
+    config := voltgrad.DefaultTrainingConfig()
     config.Epochs = 10
     config.BatchSize = 16
 
-    pipeline, err := vulkankernel.NewTrainingPipeline(config, model)
+    pipeline, err := voltgrad.NewTrainingPipeline(config, model)
     if err != nil {
         panic(err)
     }
