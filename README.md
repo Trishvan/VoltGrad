@@ -139,3 +139,18 @@ Epoch  5/ 5 | Loss:   2800 | Time:   0.62ms | Bit-Widths: [18 16 18 17]
 --- PASS: TestVulkanTrainingPipelineWithDBW (0.15s)
 PASS
 ```
+
+---
+
+## 🗺️ Roadmap
+
+- [x] Vulkan compute core — device discovery, host-coherent buffers, SPIR-V dispatch
+- [x] Q16 packed tensors with mandatory Dynamic Bit Widening
+- [x] Trainer pipeline — batching, integer losses, SGD / Momentum / Adam-Q, DBW event log
+- [x] End-to-end integration test (2-bit MLP, live width growth + convergence check)
+- [ ] A small C ABI export surface for the training core
+- [ ] Bindings for other languages riding on top of that surface
+
+The Go core is the single owner of the Vulkan device chain; planned bindings
+attach through one small export surface instead of re-walking discovery,
+memory, and dispatch in every language.
