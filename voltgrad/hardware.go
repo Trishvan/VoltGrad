@@ -214,9 +214,35 @@ func (b *GpuBuffer) WriteInt32(data []int32) {
 	copy(dst, src)
 }
 
+// WriteUint32 copies a slice of uint32 directly into the mapped memory.
+func (b *GpuBuffer) WriteUint32(data []uint32) {
+	byteLen := len(data) * 4
+	if uint64(byteLen) > b.size {
+		panic("buffer overflow on WriteUint32")
+	}
+	src := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen)
+	dst := unsafe.Slice((*byte)(b.mapped), byteLen)
+	copy(dst, src)
+}
+
 // ReadInt32 reads back a slice of int32 from host-coherent mapped memory.
 func (b *GpuBuffer) ReadInt32(count int) []int32 {
 	return unsafe.Slice((*int32)(b.mapped), count)
+}
+
+// ReadUint32 reads back a slice of uint32 from host-coherent mapped memory.
+func (b *GpuBuffer) ReadUint32(count int) []uint32 {
+	return unsafe.Slice((*uint32)(b.mapped), count)
+}
+
+// Clear zeroes out the mapped memory buffer.
+func (b *GpuBuffer) Clear() {
+	if b.mapped != nil && b.size > 0 {
+		dst := unsafe.Slice((*byte)(b.mapped), b.size)
+		for i := range dst {
+			dst[i] = 0
+		}
+	}
 }
 
 // Free releases the buffer and unmaps memory.

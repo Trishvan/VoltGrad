@@ -260,3 +260,46 @@ func (t *DynamicBitTensor) FromInt32Slice(values []int32) {
 		t.SetInt32(i, v)
 	}
 }
+
+// Clone returns an independent deep copy of the DynamicBitTensor.
+func (t *DynamicBitTensor) Clone() *DynamicBitTensor {
+	dataCopy := make([]byte, len(t.data))
+	copy(dataCopy, t.data)
+	shapeCopy := make([]int, len(t.shape))
+	copy(shapeCopy, t.shape)
+	return &DynamicBitTensor{
+		shape:    shapeCopy,
+		length:   t.length,
+		bitWidth: t.bitWidth,
+		data:     dataCopy,
+	}
+}
+
+// Words returns the underlying packed bitstream as a contiguous []uint32 slice for direct GPU buffer binding.
+func (t *DynamicBitTensor) Words() []uint32 {
+	numWords := (len(t.data) + 3) / 4
+	if numWords == 0 {
+		return []uint32{0}
+	}
+	words := make([]uint32, numWords)
+	for i := 0; i < len(t.data); i++ {
+		wordIdx := i / 4
+		byteInWord := i % 4
+		words[wordIdx] |= uint32(t.data[i]) << (byteInWord * 8)
+	}
+	return words
+}
+
+// SetWords updates the packed bitstream directly from GPU-computed []uint32 words at the specified bit-width.
+func (t *DynamicBitTensor) SetWords(words []uint32, bitWidth int) {
+	t.bitWidth = bitWidth
+	totalBytes := (t.length*bitWidth + 7) / 8
+	t.data = make([]byte, totalBytes)
+	for i := 0; i < totalBytes; i++ {
+		wordIdx := i / 4
+		byteInWord := i % 4
+		if wordIdx < len(words) {
+			t.data[i] = byte((words[wordIdx] >> (byteInWord * 8)) & 0xFF)
+		}
+	}
+}
