@@ -40,6 +40,7 @@ type EpochMetrics struct {
 type VulkanTrainingPipeline struct {
 	hw        *HardwareContext
 	pipeline  *Pipeline
+	gpu       *GpuEngine
 	optimizer *DynamicBitOptimizer
 	config    TrainingConfig
 }
@@ -57,11 +58,19 @@ func NewTrainingPipeline(config TrainingConfig, model ModelArchitecture) (*Vulka
 		return nil, fmt.Errorf("failed to create Vulkan compute pipeline: %w", err)
 	}
 
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		pipe.Close()
+		hw.Close()
+		return nil, fmt.Errorf("failed to create Vulkan neural network GPU engine: %w", err)
+	}
+
 	opt := NewDynamicBitOptimizer(config.OptimizerConfig, model)
 
 	return &VulkanTrainingPipeline{
 		hw:        hw,
 		pipeline:  pipe,
+		gpu:       gpu,
 		optimizer: opt,
 		config:    config,
 	}, nil
@@ -79,6 +88,7 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 	n := len(inputs)
 	var history []EpochMetrics
 	ctx := NewComputeContext(p.pipeline)
+	ctx.SetGpuEngine(p.gpu)
 
 	if p.config.Verbose {
 		fmt.Printf("========================================================================\n")
@@ -129,8 +139,8 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 				}
 			}
 
-			// 4. Optimizer Step with Dynamic Bit Widening (DBW)
-			widenings, err := p.optimizer.Step(model)
+			// 4. Optimizer Step with Dynamic Bit Widening (DBW) on GPU
+			widenings, err := p.optimizer.StepCtx(ctx, model)
 			if err != nil {
 				return nil, fmt.Errorf("optimizer step failed: %w", err)
 			}
@@ -172,6 +182,10 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 
 // Close terminates GPU pipelines and device handles.
 func (p *VulkanTrainingPipeline) Close() {
+	if p.gpu != nil {
+		p.gpu.Close()
+		p.gpu = nil
+	}
 	if p.pipeline != nil {
 		p.pipeline.Close()
 		p.pipeline = nil

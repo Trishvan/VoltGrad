@@ -49,6 +49,14 @@ func (l *LinearLayer) Forward(x []int32, shift uint) ([]int32, error) {
 	return out, nil
 }
 
+// ForwardCtx computes output using physical GPU acceleration when available, with automatic CPU fallback.
+func (l *LinearLayer) ForwardCtx(ctx *ComputeContext, x []int32, shift uint) ([]int32, error) {
+	if ctx != nil && ctx.IsGPU() {
+		return ctx.GpuEngine().MatMulForward(l.Weight, x, l.Bias, shift)
+	}
+	return l.Forward(x, shift)
+}
+
 // Backward calculates gradients dW and dX.
 func (l *LinearLayer) Backward(dOut []int32, x []int32, shift uint) ([]int32, error) {
 	if l.UseBias {
@@ -57,6 +65,14 @@ func (l *LinearLayer) Backward(dOut []int32, x []int32, shift uint) ([]int32, er
 		}
 	}
 	return MatMulVecBackward(dOut, x, l.Weight, l.GradW, shift)
+}
+
+// BackwardCtx calculates gradients using physical GPU acceleration when available, with automatic CPU fallback.
+func (l *LinearLayer) BackwardCtx(ctx *ComputeContext, dOut []int32, x []int32, shift uint) ([]int32, error) {
+	if ctx != nil && ctx.IsGPU() {
+		return ctx.GpuEngine().MatMulBackward(dOut, x, l.Weight, l.GradW, l.GradBias, shift)
+	}
+	return l.Backward(dOut, x, shift)
 }
 
 // ZeroGrad zeroes out gradient tensors.

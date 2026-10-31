@@ -147,6 +147,45 @@ func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) 
 	return wideningNotices, nil
 }
 
+// StepCtx performs an optimization step using GPU acceleration if available in ctx, or falls back to CPU.
+func (opt *DynamicBitOptimizer) StepCtx(ctx *ComputeContext, model ModelArchitecture) ([]string, error) {
+	if ctx != nil && ctx.IsGPU() {
+		return opt.StepGPU(ctx.GpuEngine(), model)
+	}
+	return opt.Step(model)
+}
+
+// StepGPU executes parameter optimization directly on the physical GPU, including DBW expansion tracking.
+func (opt *DynamicBitOptimizer) StepGPU(gpu *GpuEngine, model ModelArchitecture) ([]string, error) {
+	params := model.Parameters()
+	grads := model.Gradients()
+
+	if len(params) != len(grads) {
+		return nil, fmt.Errorf("param count %d != grad count %d", len(params), len(grads))
+	}
+
+	opt.steps++
+	var wideningNotices []string
+
+	for pIdx := 0; pIdx < len(params); pIdx++ {
+		p := params[pIdx]
+		g := grads[pIdx]
+		v := opt.velocities[0][pIdx]
+
+		oldBits := p.BitWidth()
+		newBits, err := gpu.OptimizerStep(p, g, v, opt.config)
+		if err != nil {
+			return nil, fmt.Errorf("GPU optimizer step failed on param %d: %w", pIdx, err)
+		}
+
+		if newBits > oldBits {
+			wideningNotices = append(wideningNotices, fmt.Sprintf("Param[%d]: DBW extended %d bits -> %d bits on GPU (Zero Clipping)", pIdx, oldBits, newBits))
+		}
+	}
+
+	return wideningNotices, nil
+}
+
 // LearningRateCosineDecay computes updated Q16 learning rate following a cosine schedule.
 func LearningRateCosineDecay(baseLRQ16 int32, epoch, maxEpochs int) int32 {
 	if epoch >= maxEpochs {

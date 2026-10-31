@@ -66,6 +66,7 @@ type ModelArchitecture interface {
 // ComputeContext provides access to GPU dispatch and acceleration helpers during Forward and Backward.
 type ComputeContext struct {
 	pipeline *Pipeline
+	gpu      *GpuEngine
 	scratch  map[string]interface{}
 }
 
@@ -75,6 +76,21 @@ func NewComputeContext(p *Pipeline) *ComputeContext {
 		pipeline: p,
 		scratch:  make(map[string]interface{}),
 	}
+}
+
+// GpuEngine returns the underlying GPU compute engine.
+func (c *ComputeContext) GpuEngine() *GpuEngine {
+	return c.gpu
+}
+
+// SetGpuEngine configures the active GPU compute engine.
+func (c *ComputeContext) SetGpuEngine(gpu *GpuEngine) {
+	c.gpu = gpu
+}
+
+// IsGPU returns true if GPU acceleration is active in this compute context.
+func (c *ComputeContext) IsGPU() bool {
+	return c.gpu != nil
 }
 
 // SetScratch stores intermediate forward activations needed by backward.

@@ -17,12 +17,15 @@ All code lives in this standalone folder `voltgrad/` with **zero external depend
 | [`tensor.go`](voltgrad/tensor.go) | `DynamicBitTensor` with mandatory Dynamic Bit Widening ($W \in [2, 64]$ bits), bit-packing, zero quantization clipping. |
 | [`model.go`](voltgrad/model.go) | `ModelArchitecture` interface (`Forward`, `Backward`, `Parameters`, `Gradients`) & `ComputeLoss` (MSE, Cross-Entropy, Brier). |
 | [`hardware.go`](voltgrad/hardware.go) | Direct Vulkan GPU discovery, logical device initialization, and host-coherent zero-copy memory mapping. |
+| [`kernel.go`](voltgrad/kernel.go) | Generic SPIR-V compute kernel manager with arbitrary storage buffer descriptor sets and push constants. |
+| [`gpu_engine.go`](voltgrad/gpu_engine.go) | Coordinates GPU MatMul Forward, MatMul Backward ($dX, dW$), GPU Optimizer, and GPU DBW repacking. |
 | [`pipeline.go`](voltgrad/pipeline.go) | Vulkan compute shader compilation, pipeline layouts, push constants, and dispatch execution. |
-| [`optimizer.go`](voltgrad/optimizer.go) | `DynamicBitOptimizer` implementing $w(t+1) = w(t) - \lfloor \eta \cdot g / 2^{Q_f} \rfloor$ with SGD, Momentum, Adam-Q, and auto-widening. |
-| [`layers.go`](voltgrad/layers.go) | Reusable building blocks (e.g. `LinearLayer`, MatMul, ReLU) with forward/backward differentiation. |
+| [`optimizer.go`](voltgrad/optimizer.go) | `DynamicBitOptimizer` implementing $w(t+1) = w(t) - \lfloor \eta \cdot g / 2^{Q_f} \rfloor$ on GPU/CPU with DBW auto-widening. |
+| [`layers.go`](voltgrad/layers.go) | Reusable building blocks (`LinearLayer`, MatMul, ReLU) with GPU and CPU forward/backward differentiation. |
 | [`ops.go`](voltgrad/ops.go) | Fixed-point integer operations (MatMulVec64, Softmax, ReLU, activation backward passes). |
 | [`trainer.go`](voltgrad/trainer.go) | `VulkanTrainingPipeline` coordinating the training loop, epochs, batching, GPU dispatch, and DBW logging. |
 | [`pipeline_test.go`](voltgrad/pipeline_test.go) | Complete working example showing custom 2-layer MLP training with live DBW bit-depth expansion. |
+| [`gpu_features_test.go`](voltgrad/gpu_features_test.go) | Unit tests explicitly verifying GPU matrix multiplication and GPU optimizer with DBW bit-for-bit. |
 
 ---
 

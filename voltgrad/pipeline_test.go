@@ -56,8 +56,8 @@ func (m *ExampleMLPArchitecture) ZeroGrad() {
 }
 
 func (m *ExampleMLPArchitecture) Forward(ctx *ComputeContext, x []int32) ([]int32, error) {
-	// 1. FC1 Forward
-	h1, err := m.fc1.Forward(x, Q16FractionalBits)
+	// 1. FC1 Forward (accelerated on GPU)
+	h1, err := m.fc1.ForwardCtx(ctx, x, Q16FractionalBits)
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +69,8 @@ func (m *ExampleMLPArchitecture) Forward(ctx *ComputeContext, x []int32) ([]int3
 	ctx.SetScratch("h1_pre_act", h1)
 	ctx.SetScratch("h1_act", h1Act)
 
-	// 3. FC2 Forward
-	out, err := m.fc2.Forward(h1Act, Q16FractionalBits)
+	// 3. FC2 Forward (accelerated on GPU)
+	out, err := m.fc2.ForwardCtx(ctx, h1Act, Q16FractionalBits)
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +82,8 @@ func (m *ExampleMLPArchitecture) Backward(ctx *ComputeContext, dLoss []int32) er
 	h1Pre, _ := ctx.GetScratch("h1_pre_act")
 	h1Act, _ := ctx.GetScratch("h1_act")
 
-	// 1. FC2 Backward
-	dH1Act, err := m.fc2.Backward(dLoss, h1Act.([]int32), Q16FractionalBits)
+	// 1. FC2 Backward (accelerated on GPU)
+	dH1Act, err := m.fc2.BackwardCtx(ctx, dLoss, h1Act.([]int32), Q16FractionalBits)
 	if err != nil {
 		return err
 	}
@@ -91,8 +91,8 @@ func (m *ExampleMLPArchitecture) Backward(ctx *ComputeContext, dLoss []int32) er
 	// 2. ReLU Backward
 	dH1 := ReLUBackward(dH1Act, h1Pre.([]int32))
 
-	// 3. FC1 Backward
-	_, err = m.fc1.Backward(dH1, x.([]int32), Q16FractionalBits)
+	// 3. FC1 Backward (accelerated on GPU)
+	_, err = m.fc1.BackwardCtx(ctx, dH1, x.([]int32), Q16FractionalBits)
 	return err
 }
 
