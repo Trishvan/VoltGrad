@@ -5,6 +5,7 @@ A fully self-contained, model-agnostic Vulkan GPU training pipeline for Go with 
 Just like writing PyTorch models with CUDA in Python:
 - The **developer only writes their model architecture** (`Forward` and `Backward` passes, layer definitions).
 - The pipeline handles **GPU hardware compute discovery, host-coherent zero-copy memory mapping, batching, loss computation, fixed-point optimizers (SGD, Momentum, Adam-Q)**, and **automatic Dynamic Bit Widening (DBW)**.
+- The `*Ctx` layer calls ride the **GPU** when the pipeline is open, with a CPU fallback that yields **bit-for-bit identical** integer results.
 
 ---
 
@@ -69,14 +70,14 @@ func (m *MyCustomModel) ZeroGrad() {
 }
 
 func (m *MyCustomModel) Forward(ctx *voltgrad.ComputeContext, x []int32) ([]int32, error) {
-    h1, _ := m.fc1.Forward(x, voltgrad.Q16FractionalBits)
+    h1, _ := m.fc1.ForwardCtx(ctx, x, voltgrad.Q16FractionalBits)
     h1Act := voltgrad.ReLU(h1)
 
     ctx.SetScratch("x", x)
     ctx.SetScratch("h1", h1)
     ctx.SetScratch("h1Act", h1Act)
 
-    return m.fc2.Forward(h1Act, voltgrad.Q16FractionalBits)
+    return m.fc2.ForwardCtx(ctx, h1Act, voltgrad.Q16FractionalBits)
 }
 
 func (m *MyCustomModel) Backward(ctx *voltgrad.ComputeContext, dLoss []int32) error {
@@ -84,12 +85,14 @@ func (m *MyCustomModel) Backward(ctx *voltgrad.ComputeContext, dLoss []int32) er
     h1, _ := ctx.GetScratch("h1")
     h1Act, _ := ctx.GetScratch("h1Act")
 
-    dH1Act, _ := m.fc2.Backward(dLoss, h1Act.([]int32), voltgrad.Q16FractionalBits)
+    dH1Act, _ := m.fc2.BackwardCtx(ctx, dLoss, h1Act.([]int32), voltgrad.Q16FractionalBits)
     dH1 := voltgrad.ReLUBackward(dH1Act, h1.([]int32))
-    m.fc1.Backward(dH1, x.([]int32), voltgrad.Q16FractionalBits)
+    m.fc1.BackwardCtx(ctx, dH1, x.([]int32), voltgrad.Q16FractionalBits)
     return nil
 }
 ```
+
+When the training pipeline runs, every `ComputeContext` it hands your model is wired to a live `GpuEngine` — the `*Ctx` calls dispatch on it directly. Plain `Forward`/`Backward` calls stay CPU, and both paths produce identical packed integers.
 
 ### Launch Training on Vulkan GPU
 
@@ -143,6 +146,24 @@ Epoch  5/ 5 | Loss:   2800 | Time:   0.62ms | Bit-Widths: [18 16 18 17]
 PASS
 ```
 
+### GPU Bit-for-Bit Checks
+
+The engine layer has its own unit tests pinning GPU parity against CPU on the packed integers:
+
+```
+=== RUN   TestGPUMatMulLinearLayer
+    gpu_features_test.go:56: Forward Pass: CPU = [178 -119 75], GPU = [178 -119 75]
+    gpu_features_test.go:83: Backward dX: CPU = [2 -19 16 -8], GPU = [2 -19 16 -8]
+    gpu_features_test.go:96: >>> GPU Matrix Multiplication for LinearLayer VERIFIED 100% BIT-FOR-BIT! <<<
+--- PASS: TestGPUMatMulLinearLayer (0.12s)
+=== RUN   TestGPUOptimizerWithDBW
+    gpu_features_test.go:158: Initial bit width: 2, New bit width after GPU DBW: 13
+    gpu_features_test.go:166: Weights: CPU = [329 -656 1311 -2622], GPU = [329 -656 1311 -2622]
+    gpu_features_test.go:178: >>> GPU Optimizer with Dynamic Bit Widening (DBW) VERIFIED 100% BIT-FOR-BIT! <<<
+--- PASS: TestGPUOptimizerWithDBW (0.09s)
+PASS
+```
+
 ---
 
 ## 🗺️ Roadmap
@@ -151,6 +172,7 @@ PASS
 - [x] Q16 packed tensors with mandatory Dynamic Bit Widening
 - [x] Trainer pipeline — batching, integer losses, SGD / Momentum / Adam-Q, DBW event log
 - [x] End-to-end integration test (2-bit MLP, live width growth + convergence check)
+- [x] Multi-kernel GPU engine — per-op kernels (matmul fwd / bwd dX + dW, optimizer step, DBW repack) behind one generic kernel manager
 - [ ] A small C ABI export surface for the training core
 - [ ] Bindings for other languages riding on top of that surface
 
