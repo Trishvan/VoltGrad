@@ -104,6 +104,64 @@ type VkDeviceCreateInfo struct {
 	PEnabledFeatures        unsafe.Pointer
 }
 
+type VkPhysicalDeviceFeatures struct {
+	RobustBufferAccess                      uint32
+	FullDrawIndexUint32                     uint32
+	ImageCubeArray                          uint32
+	IndependentBlend                        uint32
+	GeometryShader                          uint32
+	TessellationShader                      uint32
+	SampleRateShading                       uint32
+	DualSrcBlend                            uint32
+	LogicOp                                 uint32
+	MultiDrawIndirect                       uint32
+	DrawIndirectFirstInstance               uint32
+	DepthClamp                              uint32
+	DepthBiasClamp                          uint32
+	FillModeNonSolid                        uint32
+	DepthBounds                             uint32
+	WideLines                               uint32
+	LargePoints                             uint32
+	AlphaToOne                              uint32
+	MultiViewport                           uint32
+	SamplerAnisotropy                       uint32
+	TextureCompressionETC2                  uint32
+	TextureCompressionASTC_LDR              uint32
+	TextureCompressionBC                    uint32
+	OcclusionQueryPrecise                   uint32
+	PipelineStatisticsQuery                 uint32
+	VertexPipelineStoresAndAtomics          uint32
+	FragmentStoresAndAtomics                uint32
+	ShaderTessellationAndGeometryPointSize  uint32
+	ShaderImageGatherExtended               uint32
+	ShaderStorageImageExtendedFormats       uint32
+	ShaderStorageImageMultisample           uint32
+	ShaderStorageImageReadWithoutFormat     uint32
+	ShaderStorageImageWriteWithoutFormat    uint32
+	ShaderUniformBufferArrayDynamicIndexing uint32
+	ShaderSampledImageArrayDynamicIndexing  uint32
+	ShaderStorageBufferArrayDynamicIndexing uint32
+	ShaderStorageImageArrayDynamicIndexing  uint32
+	ShaderClipDistance                      uint32
+	ShaderCullDistance                      uint32
+	ShaderFloat64                           uint32
+	ShaderInt64                             uint32
+	ShaderInt16                             uint32
+	ShaderResourceResidency                 uint32
+	ShaderResourceMinLod                    uint32
+	SparseBinding                           uint32
+	SparseResidencyBuffer                   uint32
+	SparseResidencyImage2D                  uint32
+	SparseResidencyImage3D                  uint32
+	SparseResidency2Samples                 uint32
+	SparseResidency4Samples                 uint32
+	SparseResidency8Samples                 uint32
+	SparseResidency16Samples                uint32
+	SparseResidencyAliased                  uint32
+	VariableMultisampleRate                 uint32
+	InheritedQueries                        uint32
+}
+
 type VkMemoryType struct {
 	PropertyFlags uint32
 	HeapIndex     uint32

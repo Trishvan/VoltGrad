@@ -168,14 +168,33 @@ PASS
 
 ## 🗺️ Roadmap
 
-- [x] Vulkan compute core — device discovery, host-coherent buffers, SPIR-V dispatch
-- [x] Q16 packed tensors with mandatory Dynamic Bit Widening
-- [x] Trainer pipeline — batching, integer losses, SGD / Momentum / Adam-Q, DBW event log
-- [x] End-to-end integration test (2-bit MLP, live width growth + convergence check)
-- [x] Multi-kernel GPU engine — per-op kernels (matmul fwd / bwd dX + dW, optimizer step, DBW repack) behind one generic kernel manager
-- [ ] A small C ABI export surface for the training core
-- [ ] Bindings for other languages riding on top of that surface
+### VoltGrad 0.2 — GPU execution and numerical correctness (Priority 1)
+- [x] Enable and validate shaderInt64 (queried via `vkGetPhysicalDeviceFeatures` and enabled in `VkDeviceCreateInfo`).
+- [x] Fix GPU/CPU optimizer discrepancies (64-bit precision MAC, weight decay, Adam-Q signed directional steps).
+- [x] Add 64-bit DBW correctness tests (validating values through 64 bits and `math.MaxInt64`).
+- [x] Add overflow and boundary tests (validating range limits and byte-boundary transitions).
+- [x] Fix GPU resource error handling (reusable cleanup rollback, `vkDeviceWaitIdle` on shutdown).
+- [x] Update README examples.
 
-The Go core is the single owner of the Vulkan device chain; planned bindings
-attach through one small export surface instead of re-walking discovery,
-memory, and dispatch in every language.
+### VoltGrad 0.3 — GPU performance (Priority 2)
+- [ ] Batched GEMM.
+- [ ] Persistent GPU allocations.
+- [ ] Buffer pooling.
+- [ ] Asynchronous command execution.
+- [ ] GPU activation and reduction kernels.
+- [ ] GPU profiling and timestamps.
+
+### VoltGrad 0.4 — Adaptive computing
+- [ ] Block-wise DBW.
+- [ ] Mixed-precision execution.
+- [ ] Adaptive precision policies.
+- [ ] Fused neural-network operations.
+- [ ] Execution graph.
+
+### VoltGrad 1.0 — Production runtime
+- [ ] Cross-platform Vulkan loader.
+- [ ] CPU/Vulkan backend selection.
+- [ ] Device selection and capability reporting.
+- [ ] Model serialization.
+- [ ] C ABI and language bindings.
+- [ ] Benchmark and compatibility suite.

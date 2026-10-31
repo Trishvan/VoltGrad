@@ -22,6 +22,7 @@ type HardwareContext struct {
 	queue    uintptr
 	queueFam uint32
 	memProps VkPhysicalDeviceMemoryProperties
+	hasShaderInt64 bool
 }
 
 // NewHardwareContext discovers and initializes the system's Vulkan compute device.
@@ -102,10 +103,23 @@ func (c *HardwareContext) initDevice() error {
 		QueueCount:       1,
 		PQueuePriorities: &priority,
 	}
+	getFeats := c.dll.NewProc("vkGetPhysicalDeviceFeatures")
+	var supportedFeatures VkPhysicalDeviceFeatures
+	getFeats.Call(c.physDev, uintptr(unsafe.Pointer(&supportedFeatures)))
+
+	var enabledFeatures VkPhysicalDeviceFeatures
+	if supportedFeatures.ShaderInt64 != 0 {
+		enabledFeatures.ShaderInt64 = 1
+		c.hasShaderInt64 = true
+	} else {
+		return errors.New("Vulkan physical device does not support mandatory feature: shaderInt64")
+	}
+
 	deviceCI := VkDeviceCreateInfo{
 		SType:                VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		QueueCreateInfoCount: 1,
 		PQueueCreateInfos:    &queueCI,
+		PEnabledFeatures:     unsafe.Pointer(&enabledFeatures),
 	}
 
 	createDev := c.dll.NewProc("vkCreateDevice")
@@ -120,6 +134,11 @@ func (c *HardwareContext) initDevice() error {
 	return nil
 }
 
+// HasShaderInt64 returns true if 64-bit integer compute shader operations are enabled and validated on the hardware.
+func (c *HardwareContext) HasShaderInt64() bool {
+	return c.hasShaderInt64
+}
+
 func (c *HardwareContext) findMemoryType(typeBits uint32, properties uint32) int {
 	for i := uint32(0); i < c.memProps.MemoryTypeCount; i++ {
 		if (typeBits&(1<<i)) != 0 && (c.memProps.MemoryTypes[i].PropertyFlags&properties) == properties {
@@ -132,6 +151,10 @@ func (c *HardwareContext) findMemoryType(typeBits uint32, properties uint32) int
 // Close releases the Vulkan instance and logical device.
 func (c *HardwareContext) Close() {
 	if c.device != 0 {
+		waitIdle := c.getProc("vkDeviceWaitIdle")
+		if waitIdle != 0 {
+			syscall.SyscallN(waitIdle, c.device)
+		}
 		destroyDevice := c.getProc("vkDestroyDevice")
 		if destroyDevice != 0 {
 			syscall.SyscallN(destroyDevice, c.device, 0)

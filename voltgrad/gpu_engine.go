@@ -38,8 +38,8 @@ func NewGpuEngine(hw *HardwareContext) (*GpuEngine, error) {
 		return nil, fmt.Errorf("failed creating matmul_backward_dw kernel: %w", err)
 	}
 
-	// 4. Optimizer Step (4 bindings: Weights, Grads, Velocities, Meta; 20 bytes push constants)
-	kOpt, err := NewComputeKernel(hw, optimizerStepSPV, 4, 20)
+	// 4. Optimizer Step (4 bindings: Weights, Grads, Velocities, Meta; 24 bytes push constants)
+	kOpt, err := NewComputeKernel(hw, optimizerStepSPV, 4, 24)
 	if err != nil {
 		kFwd.Close()
 		kBwdDx.Close()
@@ -277,17 +277,18 @@ func (e *GpuEngine) OptimizerStep(p *DynamicBitTensor, g *DynamicBitTensor, v *D
 	bufMeta.WriteUint32([]uint32{uint32(p.BitWidth())})
 
 	optType := uint32(cfg.Type)
-	pushOpt := [5]int32{
+	pushOpt := [6]int32{
 		int32(count),
 		cfg.LearningRateQ16,
 		cfg.MomentumBeta,
 		int32(cfg.FractionalBits),
 		int32(optType),
+		cfg.WeightDecayQ16,
 	}
 
 	wg := uint32((count + 63) / 64)
 	buffersOpt := []*GpuBuffer{bufWeights, bufGrads, bufVelocities, bufMeta}
-	if err := e.kernelOptimizer.Dispatch(buffersOpt, unsafe.Pointer(&pushOpt[0]), 20, wg); err != nil {
+	if err := e.kernelOptimizer.Dispatch(buffersOpt, unsafe.Pointer(&pushOpt[0]), 24, wg); err != nil {
 		return p.BitWidth(), fmt.Errorf("GPU OptimizerStep dispatch failed: %w", err)
 	}
 

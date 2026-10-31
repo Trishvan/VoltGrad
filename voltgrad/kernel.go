@@ -126,6 +126,34 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		return nil, fmt.Errorf("vkCreateComputePipelines failed: %d", r)
 	}
 
+	var descPool uint64
+	var cmdPool uint64
+	var fence uint64
+
+	cleanup := func() {
+		if fence != 0 {
+			syscall.SyscallN(hw.getProc("vkDestroyFence"), hw.device, uintptr(fence), 0)
+		}
+		if cmdPool != 0 {
+			syscall.SyscallN(hw.getProc("vkDestroyCommandPool"), hw.device, uintptr(cmdPool), 0)
+		}
+		if descPool != 0 {
+			syscall.SyscallN(hw.getProc("vkDestroyDescriptorPool"), hw.device, uintptr(descPool), 0)
+		}
+		if compPipeline != 0 {
+			syscall.SyscallN(hw.getProc("vkDestroyPipeline"), hw.device, uintptr(compPipeline), 0)
+		}
+		if pipeLayout != 0 {
+			syscall.SyscallN(hw.getProc("vkDestroyPipelineLayout"), hw.device, uintptr(pipeLayout), 0)
+		}
+		if descLayout != 0 {
+			syscall.SyscallN(hw.getProc("vkDestroyDescriptorSetLayout"), hw.device, uintptr(descLayout), 0)
+		}
+		if shaderModule != 0 {
+			syscall.SyscallN(hw.getProc("vkDestroyShaderModule"), hw.device, uintptr(shaderModule), 0)
+		}
+	}
+
 	poolSize := VkDescriptorPoolSize{
 		Type:            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		DescriptorCount: uint32(numBindings),
@@ -136,9 +164,9 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		PoolSizeCount: 1,
 		PPoolSizes:    &poolSize,
 	}
-	var descPool uint64
 	r, _, _ = syscall.SyscallN(hw.getProc("vkCreateDescriptorPool"), hw.device, uintptr(unsafe.Pointer(&poolCI)), 0, uintptr(unsafe.Pointer(&descPool)))
 	if r != 0 {
+		cleanup()
 		return nil, fmt.Errorf("vkCreateDescriptorPool failed: %d", r)
 	}
 
@@ -151,6 +179,7 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 	var descSet uint64
 	r, _, _ = syscall.SyscallN(hw.getProc("vkAllocateDescriptorSets"), hw.device, uintptr(unsafe.Pointer(&allocSet)), uintptr(unsafe.Pointer(&descSet)))
 	if r != 0 {
+		cleanup()
 		return nil, fmt.Errorf("vkAllocateDescriptorSets failed: %d", r)
 	}
 
@@ -159,9 +188,9 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		Flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
 		QueueFamilyIndex: hw.queueFam,
 	}
-	var cmdPool uint64
 	r, _, _ = syscall.SyscallN(hw.getProc("vkCreateCommandPool"), hw.device, uintptr(unsafe.Pointer(&cmdPoolCI)), 0, uintptr(unsafe.Pointer(&cmdPool)))
 	if r != 0 {
+		cleanup()
 		return nil, fmt.Errorf("vkCreateCommandPool failed: %d", r)
 	}
 
@@ -174,13 +203,14 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 	var cmdBuf uintptr
 	r, _, _ = syscall.SyscallN(hw.getProc("vkAllocateCommandBuffers"), hw.device, uintptr(unsafe.Pointer(&cmdAlloc)), uintptr(unsafe.Pointer(&cmdBuf)))
 	if r != 0 {
+		cleanup()
 		return nil, fmt.Errorf("vkAllocateCommandBuffers failed: %d", r)
 	}
 
 	fenceCI := VkFenceCreateInfo{SType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}
-	var fence uint64
 	r, _, _ = syscall.SyscallN(hw.getProc("vkCreateFence"), hw.device, uintptr(unsafe.Pointer(&fenceCI)), 0, uintptr(unsafe.Pointer(&fence)))
 	if r != 0 {
+		cleanup()
 		return nil, fmt.Errorf("vkCreateFence failed: %d", r)
 	}
 
