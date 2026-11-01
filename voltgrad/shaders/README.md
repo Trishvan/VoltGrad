@@ -17,30 +17,52 @@ This directory contains the GLSL compute shaders and precompiled SPIR-V binaries
    - Computes: \( dW_{i,j} += (dOut_i \cdot x_j) \gg \text{shift} \)
    - Accumulates full 64-bit weight and bias gradients directly into storage buffers.
 
-4. **`optimizer_step.comp`** (`optimizer_step.spv`)
-   - Supports SGD, SGD with Momentum, and AdamQ.
-   - Operates on full 64-bit parameters (`int64_t`), gradients, and momentum velocity state.
-   - Evaluates dynamic bit-width requirement (`bits_needed_64`) per element and updates target bit-width via `atomicMax(meta[0], needed)`.
+4. **`matmul_batched_forward.comp`** (`matmul_batched_forward.spv`)
+   - Computes: \( Y[B, \text{outDim}] = (X[B, \text{inDim}] \cdot W^T) \gg \text{shift} + \text{bias} \)
+   - Parallelized across batch size \( B \) and output features without thread divergence.
 
-5. **`repack_dbw.comp`** (`repack_dbw.spv`)
-   - Repacks 64-bit parameter values into contiguous bitstreams in VRAM.
-   - Handles multi-word bitstream spans across up to three 32-bit storage words using lockless `atomicOr`.
+5. **`matmul_batched_backward_dx.comp`** (`matmul_batched_backward_dx.spv`)
+   - Computes input batch gradients: \( dX[B, \text{inDim}] = (dOut[B, \text{outDim}] \cdot W) \gg \text{shift} \).
 
-## Compiling Shaders
+6. **`matmul_batched_backward_dw.comp`** (`matmul_batched_backward_dw.spv`)
+   - Accumulates weight and bias gradients across the entire batch in parallel on GPU.
 
-To recompile the GLSL `.comp` files to `.spv` SPIR-V binaries:
+7. **`relu_forward.comp`** (`relu_forward.spv`)
+   - Element-wise rectified linear unit: \( Y_i = \max(0, X_i) \).
 
-### Option A: Using Node.js with `@webgpu/glslang` (cross-platform, zero C++ toolchain needed)
+8. **`relu_backward.comp`** (`relu_backward.spv`)
+   - Element-wise activation backward: \( dX_i = (X_i > 0 \ ?\ dOut_i : 0) \).
+
+9. **`loss_mse.comp`** (`loss_mse.spv`)
+   - Computes squared error loss and error gradients directly in GPU VRAM.
+
+10. **`optimizer_step.comp`** (`optimizer_step.spv`)
+    - Supports SGD, SGD with Momentum, and AdamQ.
+    - Operates on full 64-bit parameters (`int64_t`), gradients, and momentum velocity state.
+    - Evaluates dynamic bit-width requirement (`bits_needed_64`) per element and updates target bit-width via `atomicMax(meta[0], needed)`.
+
+11. **`repack_dbw.comp`** (`repack_dbw.spv`)
+    - Repacks 64-bit parameter values into contiguous bitstreams in VRAM.
+    - Handles multi-word bitstream spans across up to three 32-bit storage words using lockless `atomicOr`.
+
+## Compiling Shaders (Pure Go & Native Tools)
+
+Precompiled SPIR-V binaries (`.spv`) are already committed into the repository and embedded directly into Go binaries via `//go:embed`. Recompilation is **only necessary when modifying `.comp` source files**.
+
+### Option A: Using the VoltGrad Native Go Tool (Recommended)
+VoltGrad includes a pure Go compilation tool that automatically locates `glslc` or `glslangValidator` from your system PATH or Vulkan SDK:
+
 ```bash
-npm install @webgpu/glslang
-node compile.js
+go run ./cmd/compileshaders
 ```
 
-### Option B: Using the Vulkan SDK `glslangValidator`
+### Option B: Using `glslc` (Google Shaderc / Vulkan SDK)
+```bash
+glslc -fshader-stage=compute matmul_forward.comp -o matmul_forward.spv
+glslc -fshader-stage=compute matmul_batched_forward.comp -o matmul_batched_forward.spv
+```
+
+### Option C: Using `glslangValidator` (Khronos Reference Compiler)
 ```bash
 glslangValidator -V matmul_forward.comp -o matmul_forward.spv
-glslangValidator -V matmul_backward_dx.comp -o matmul_backward_dx.spv
-glslangValidator -V matmul_backward_dw.comp -o matmul_backward_dw.spv
-glslangValidator -V optimizer_step.comp -o optimizer_step.spv
-glslangValidator -V repack_dbw.comp -o repack_dbw.spv
 ```

@@ -12,7 +12,7 @@ import (
 func TestShaderInt64Validation(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to initialize Vulkan hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 
@@ -120,7 +120,7 @@ func TestOverflowAndBoundaryConditions(t *testing.T) {
 func TestGPUCPUOptimizerDiscrepancies(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to init hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 
@@ -209,7 +209,7 @@ func TestGPUCPUOptimizerDiscrepancies(t *testing.T) {
 func TestFull64BitGPUDBWOptimizer(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to init hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 
@@ -300,7 +300,7 @@ func TestFull64BitGPUDBWOptimizer(t *testing.T) {
 func TestRandomizedGPUCPUParity(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to init hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 
@@ -385,7 +385,7 @@ func TestRandomizedGPUCPUParity(t *testing.T) {
 func TestFull64BitMatMulForwardBackwardParity(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to init hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 
@@ -475,7 +475,7 @@ func TestFull64BitMatMulForwardBackwardParity(t *testing.T) {
 func TestRandomizedMatMulForwardBackwardParity(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to init hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 
@@ -576,7 +576,7 @@ func TestRandomizedMatMulForwardBackwardParity(t *testing.T) {
 func TestRandomizedDBWRepackParity(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to init hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 
@@ -699,7 +699,7 @@ func TestTrainerConfigValidation(t *testing.T) {
 func TestMatMulBackwardInputValidation(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to init hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 

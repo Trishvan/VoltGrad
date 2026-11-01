@@ -9,7 +9,7 @@ import (
 func TestGPUMatMulLinearLayer(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to init hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 
@@ -100,7 +100,7 @@ func TestGPUMatMulLinearLayer(t *testing.T) {
 func TestGPUOptimizerWithDBW(t *testing.T) {
 	hw, err := NewHardwareContext()
 	if err != nil {
-		t.Fatalf("Failed to init hardware: %v", err)
+		t.Skipf("Skipping Vulkan test (hardware initialization: %v)", err)
 	}
 	defer hw.Close()
 
