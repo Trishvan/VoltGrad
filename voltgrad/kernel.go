@@ -260,14 +260,21 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 	syscall.SyscallN(k.hw.getProc("vkUpdateDescriptorSets"), k.hw.device, uintptr(k.numBindings), uintptr(unsafe.Pointer(&writes[0])), 0, 0)
 
 	// Reset fence
-	syscall.SyscallN(k.hw.getProc("vkResetFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)))
+	r, _, _ := syscall.SyscallN(k.hw.getProc("vkResetFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)))
+	if r != 0 {
+		return fmt.Errorf("vkResetFences failed: %d", r)
+	}
 
 	// Record command buffer
 	beginInfo := VkCommandBufferBeginInfo{
 		SType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		Flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 	}
-	syscall.SyscallN(k.hw.getProc("vkBeginCommandBuffer"), k.cmdBuf, uintptr(unsafe.Pointer(&beginInfo)))
+	r, _, _ = syscall.SyscallN(k.hw.getProc("vkBeginCommandBuffer"), k.cmdBuf, uintptr(unsafe.Pointer(&beginInfo)))
+	if r != 0 {
+		return fmt.Errorf("vkBeginCommandBuffer failed: %d", r)
+	}
+
 	syscall.SyscallN(k.hw.getProc("vkCmdBindPipeline"), k.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(k.pipeline))
 	syscall.SyscallN(k.hw.getProc("vkCmdBindDescriptorSets"), k.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(k.pipeLayout), 0, 1, uintptr(unsafe.Pointer(&k.descSet)), 0, 0)
 
@@ -276,17 +283,23 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 	}
 
 	syscall.SyscallN(k.hw.getProc("vkCmdDispatch"), k.cmdBuf, uintptr(workgroups), 1, 1)
-	syscall.SyscallN(k.hw.getProc("vkEndCommandBuffer"), k.cmdBuf)
+	r, _, _ = syscall.SyscallN(k.hw.getProc("vkEndCommandBuffer"), k.cmdBuf)
+	if r != 0 {
+		return fmt.Errorf("vkEndCommandBuffer failed: %d", r)
+	}
 
 	submitInfo := VkSubmitInfo{
 		SType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
 		CommandBufferCount: 1,
 		PCommandBuffers:    &k.cmdBuf,
 	}
-	syscall.SyscallN(k.hw.getProc("vkQueueSubmit"), k.hw.queue, 1, uintptr(unsafe.Pointer(&submitInfo)), uintptr(k.fence))
+	r, _, _ = syscall.SyscallN(k.hw.getProc("vkQueueSubmit"), k.hw.queue, 1, uintptr(unsafe.Pointer(&submitInfo)), uintptr(k.fence))
+	if r != 0 {
+		return fmt.Errorf("vkQueueSubmit failed: %d", r)
+	}
 
 	// Wait for GPU fence (2-second timeout)
-	r, _, _ := syscall.SyscallN(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(2000000000))
+	r, _, _ = syscall.SyscallN(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(2000000000))
 	if r != 0 {
 		return fmt.Errorf("GPU compute execution failed or timed out: %d", r)
 	}

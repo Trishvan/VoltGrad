@@ -27,6 +27,8 @@ All code lives in this standalone folder `voltgrad/` with **zero external depend
 | [`trainer.go`](voltgrad/trainer.go) | `VulkanTrainingPipeline` coordinating the training loop, epochs, batching, GPU dispatch, and DBW logging. |
 | [`pipeline_test.go`](voltgrad/pipeline_test.go) | Complete working example showing custom 2-layer MLP training with live DBW bit-depth expansion. |
 | [`gpu_features_test.go`](voltgrad/gpu_features_test.go) | Unit tests explicitly verifying GPU matrix multiplication and GPU optimizer with DBW bit-for-bit. |
+| [`correctness_test.go`](voltgrad/correctness_test.go) | Test suite covering `shaderInt64` feature detection, true 64-bit DBW values (`1<<35`, `1<<45`, `math.MaxInt64`), boundaries, and randomized GPU/CPU parity. |
+| [`shaders/`](voltgrad/shaders/) | GLSL compute shader sources (`.comp`), compiled SPIR-V binaries (`.spv`), compilation script, and documentation. |
 
 ---
 

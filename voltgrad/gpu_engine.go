@@ -97,15 +97,15 @@ func (e *GpuEngine) MatMulForward(w *DynamicBitTensor, x []int32, bias *DynamicB
 	var bufBias *GpuBuffer
 	if bias != nil {
 		useBias = 1
-		biasWords := bias.ToInt32Slice()
-		bufBias, err = e.hw.CreateHostCoherentBuffer(uint64(len(biasWords) * 4))
+		biasWords := bias.ToInt64Slice()
+		bufBias, err = e.hw.CreateHostCoherentBuffer(uint64(len(biasWords) * 8))
 		if err != nil {
 			return nil, err
 		}
 		defer bufBias.Free()
-		bufBias.WriteInt32(biasWords)
+		bufBias.WriteInt64(biasWords)
 	} else {
-		bufBias, err = e.hw.CreateHostCoherentBuffer(4)
+		bufBias, err = e.hw.CreateHostCoherentBuffer(8)
 		if err != nil {
 			return nil, err
 		}
@@ -132,7 +132,8 @@ func (e *GpuEngine) MatMulForward(w *DynamicBitTensor, x []int32, bias *DynamicB
 		return nil, fmt.Errorf("GPU MatMulForward dispatch failed: %w", err)
 	}
 
-	return bufY.ReadInt32(outDim), nil
+	out := bufY.ReadInt32(outDim)
+	return out, nil
 }
 
 // MatMulBackward executes dX = (W^T * dOut) >> shift and accumulates dW on the GPU.
@@ -173,8 +174,7 @@ func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor,
 	if err := e.kernelMatMulBwdDx.Dispatch(buffersDx, unsafe.Pointer(&pushDx[0]), 16, wgDx); err != nil {
 		return nil, fmt.Errorf("GPU MatMulBackward dX dispatch failed: %w", err)
 	}
-	dX := make([]int32, inDim)
-	copy(dX, bufDX.ReadInt32(inDim))
+	dX := bufDX.ReadInt32(inDim)
 
 	// 2. Accumulate dW and dBias on GPU
 	bufX, err := e.hw.CreateHostCoherentBuffer(uint64(len(x) * 4))
@@ -184,28 +184,28 @@ func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor,
 	defer bufX.Free()
 	bufX.WriteInt32(x)
 
-	gradWSlice := gradW.ToInt32Slice()
-	bufGradW, err := e.hw.CreateHostCoherentBuffer(uint64(len(gradWSlice) * 4))
+	gradWSlice := gradW.ToInt64Slice()
+	bufGradW, err := e.hw.CreateHostCoherentBuffer(uint64(len(gradWSlice) * 8))
 	if err != nil {
 		return nil, err
 	}
 	defer bufGradW.Free()
-	bufGradW.WriteInt32(gradWSlice)
+	bufGradW.WriteInt64(gradWSlice)
 
 	useBias := uint32(0)
 	var bufGradBias *GpuBuffer
-	var gradBiasSlice []int32
+	var gradBiasSlice []int64
 	if gradBias != nil {
 		useBias = 1
-		gradBiasSlice = gradBias.ToInt32Slice()
-		bufGradBias, err = e.hw.CreateHostCoherentBuffer(uint64(len(gradBiasSlice) * 4))
+		gradBiasSlice = gradBias.ToInt64Slice()
+		bufGradBias, err = e.hw.CreateHostCoherentBuffer(uint64(len(gradBiasSlice) * 8))
 		if err != nil {
 			return nil, err
 		}
 		defer bufGradBias.Free()
-		bufGradBias.WriteInt32(gradBiasSlice)
+		bufGradBias.WriteInt64(gradBiasSlice)
 	} else {
-		bufGradBias, err = e.hw.CreateHostCoherentBuffer(4)
+		bufGradBias, err = e.hw.CreateHostCoherentBuffer(8)
 		if err != nil {
 			return nil, err
 		}
@@ -226,12 +226,12 @@ func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor,
 	}
 
 	// Copy updated gradients back into tensors
-	updatedGradW := bufGradW.ReadInt32(totalWeights)
-	gradW.FromInt32Slice(updatedGradW)
+	updatedGradW := bufGradW.ReadInt64(totalWeights)
+	gradW.FromInt64Slice(updatedGradW)
 
 	if gradBias != nil {
-		updatedGradBias := bufGradBias.ReadInt32(outDim)
-		gradBias.FromInt32Slice(updatedGradBias)
+		updatedGradBias := bufGradBias.ReadInt64(outDim)
+		gradBias.FromInt64Slice(updatedGradBias)
 	}
 
 	return dX, nil
@@ -244,29 +244,29 @@ func (e *GpuEngine) OptimizerStep(p *DynamicBitTensor, g *DynamicBitTensor, v *D
 		return p.BitWidth(), fmt.Errorf("tensor length mismatch in OptimizerStep")
 	}
 
-	wSlice := p.ToInt32Slice()
-	bufWeights, err := e.hw.CreateHostCoherentBuffer(uint64(count * 4))
+	wSlice := p.ToInt64Slice()
+	bufWeights, err := e.hw.CreateHostCoherentBuffer(uint64(count * 8))
 	if err != nil {
 		return p.BitWidth(), err
 	}
 	defer bufWeights.Free()
-	bufWeights.WriteInt32(wSlice)
+	bufWeights.WriteInt64(wSlice)
 
-	gSlice := g.ToInt32Slice()
-	bufGrads, err := e.hw.CreateHostCoherentBuffer(uint64(count * 4))
+	gSlice := g.ToInt64Slice()
+	bufGrads, err := e.hw.CreateHostCoherentBuffer(uint64(count * 8))
 	if err != nil {
 		return p.BitWidth(), err
 	}
 	defer bufGrads.Free()
-	bufGrads.WriteInt32(gSlice)
+	bufGrads.WriteInt64(gSlice)
 
-	vSlice := v.ToInt32Slice()
-	bufVelocities, err := e.hw.CreateHostCoherentBuffer(uint64(count * 4))
+	vSlice := v.ToInt64Slice()
+	bufVelocities, err := e.hw.CreateHostCoherentBuffer(uint64(count * 8))
 	if err != nil {
 		return p.BitWidth(), err
 	}
 	defer bufVelocities.Free()
-	bufVelocities.WriteInt32(vSlice)
+	bufVelocities.WriteInt64(vSlice)
 
 	// meta[0] initialized to current bit width
 	bufMeta, err := e.hw.CreateHostCoherentBuffer(4)
@@ -293,8 +293,8 @@ func (e *GpuEngine) OptimizerStep(p *DynamicBitTensor, g *DynamicBitTensor, v *D
 	}
 
 	// Read updated velocity
-	newV := bufVelocities.ReadInt32(count)
-	v.FromInt32Slice(newV)
+	newV := bufVelocities.ReadInt64(count)
+	v.FromInt64Slice(newV)
 
 	// Check if DBW auto-widening occurred on the GPU
 	metaResult := bufMeta.ReadUint32(1)[0]

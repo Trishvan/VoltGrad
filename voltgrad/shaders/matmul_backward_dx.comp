@@ -1,0 +1,57 @@
+#version 450
+#extension GL_ARB_gpu_shader_int64 : enable
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer InDOut { int d_out[]; };
+layout(std430, binding = 1) readonly buffer InW { uint packed_w[]; };
+layout(std430, binding = 2) writeonly buffer OutDX { int d_x[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint in_dim;
+    uint out_dim;
+    uint bit_width;
+    uint shift;
+} pc;
+
+int64_t unpack_weight_64(uint idx, uint w_bits) {
+    uint bit_offset = idx * w_bits;
+    uint word_idx = bit_offset / 32u;
+    uint bit_in_word = bit_offset % 32u;
+    
+    uint64_t raw = uint64_t(packed_w[word_idx] >> bit_in_word);
+    uint bits_in_first = 32u - bit_in_word;
+    if (w_bits > bits_in_first) {
+        raw |= (uint64_t(packed_w[word_idx + 1u]) << bits_in_first);
+        uint rem_bits = w_bits - bits_in_first;
+        if (rem_bits > 32u) {
+            raw |= (uint64_t(packed_w[word_idx + 2u]) << (bits_in_first + 32u));
+        }
+    }
+    
+    if (w_bits < 64u) {
+        uint64_t mask = (1ul << w_bits) - 1ul;
+        raw &= mask;
+        uint64_t sign_bit = 1ul << (w_bits - 1u);
+        if ((raw & sign_bit) != 0ul) {
+            raw |= ~mask;
+        }
+    }
+    return int64_t(raw);
+}
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    if (c >= pc.in_dim) return;
+    
+    int64_t accum = 0l;
+    for (uint r = 0u; r < pc.out_dim; r++) {
+        uint idx = r * pc.in_dim + c;
+        int64_t w = unpack_weight_64(idx, pc.bit_width);
+        accum += int64_t(d_out[r]) * w;
+    }
+    int64_t res = accum >> pc.shift;
+    if (res > 2147483647l) res = 2147483647l;
+    else if (res < -2147483648l) res = -2147483648l;
+    d_x[c] = int(res);
+}

@@ -241,6 +241,15 @@ func (t *DynamicBitTensor) ToInt32Slice() []int32 {
 	return out
 }
 
+// ToInt64Slice unrolls the packed tensor into a contiguous []int64 slice without truncation.
+func (t *DynamicBitTensor) ToInt64Slice() []int64 {
+	out := make([]int64, t.length)
+	for i := 0; i < t.length; i++ {
+		out[i] = t.Get(i)
+	}
+	return out
+}
+
 // FromInt32Slice copies contiguous values into the tensor and updates DBW bit-depth to the minimal fit.
 func (t *DynamicBitTensor) FromInt32Slice(values []int32) {
 	if len(values) != t.length {
@@ -258,6 +267,26 @@ func (t *DynamicBitTensor) FromInt32Slice(values []int32) {
 	}
 	for i, v := range values {
 		t.SetInt32(i, v)
+	}
+}
+
+// FromInt64Slice copies contiguous 64-bit values into the tensor and updates DBW bit-depth to the minimal fit.
+func (t *DynamicBitTensor) FromInt64Slice(values []int64) {
+	if len(values) != t.length {
+		panic(fmt.Sprintf("slice length %d does not match tensor length %d", len(values), t.length))
+	}
+	maxBits := 2
+	for _, v := range values {
+		b := BitsNeeded64(v)
+		if b > maxBits {
+			maxBits = b
+		}
+	}
+	if maxBits > t.bitWidth {
+		t.Widen(maxBits)
+	}
+	for i, v := range values {
+		t.Set(i, v)
 	}
 }
 

@@ -2,6 +2,7 @@ package voltgrad
 
 import (
 	_ "embed"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"syscall"
@@ -76,25 +77,74 @@ func (c *HardwareContext) initDevice() error {
 
 	physDevs := make([]uintptr, physCount)
 	enumPhys.Call(c.instance, uintptr(unsafe.Pointer(&physCount)), uintptr(unsafe.Pointer(&physDevs[0])))
-	c.physDev = physDevs[0]
 
+	getProps := c.dll.NewProc("vkGetPhysicalDeviceProperties")
 	getQProps := c.dll.NewProc("vkGetPhysicalDeviceQueueFamilyProperties")
-	var qCount uint32
-	getQProps.Call(c.physDev, uintptr(unsafe.Pointer(&qCount)), 0)
-	qProps := make([]VkQueueFamilyProperties, qCount)
-	getQProps.Call(c.physDev, uintptr(unsafe.Pointer(&qCount)), uintptr(unsafe.Pointer(&qProps[0])))
+	getFeats := c.dll.NewProc("vkGetPhysicalDeviceFeatures")
 
-	computeQueueFamily := -1
-	for i, qf := range qProps {
-		if qf.QueueFlags&VK_QUEUE_COMPUTE_BIT != 0 {
-			computeQueueFamily = i
-			break
+	bestScore := -1
+	bestDev := uintptr(0)
+	bestQueueFam := -1
+
+	for _, dev := range physDevs {
+		// 1. Must support mandatory shaderInt64
+		var feats VkPhysicalDeviceFeatures
+		getFeats.Call(dev, uintptr(unsafe.Pointer(&feats)))
+		if feats.ShaderInt64 == 0 {
+			continue
+		}
+
+		// 2. Must support compute queue
+		var qCount uint32
+		getQProps.Call(dev, uintptr(unsafe.Pointer(&qCount)), 0)
+		if qCount == 0 {
+			continue
+		}
+		qProps := make([]VkQueueFamilyProperties, qCount)
+		getQProps.Call(dev, uintptr(unsafe.Pointer(&qCount)), uintptr(unsafe.Pointer(&qProps[0])))
+
+		computeFam := -1
+		for i, qf := range qProps {
+			if qf.QueueFlags&VK_QUEUE_COMPUTE_BIT != 0 {
+				computeFam = i
+				break
+			}
+		}
+		if computeFam == -1 {
+			continue
+		}
+
+		// 3. Score device: Discrete GPU (1000) > Integrated GPU (500) > Virtual (200) > CPU (100)
+		propsBuf := make([]byte, 1024)
+		getProps.Call(dev, uintptr(unsafe.Pointer(&propsBuf[0])))
+		deviceType := binary.LittleEndian.Uint32(propsBuf[16:20])
+
+		score := 10
+		switch deviceType {
+		case 2: // DISCRETE_GPU
+			score = 1000
+		case 1: // INTEGRATED_GPU
+			score = 500
+		case 3: // VIRTUAL_GPU
+			score = 200
+		case 4: // CPU
+			score = 100
+		}
+
+		if score > bestScore {
+			bestScore = score
+			bestDev = dev
+			bestQueueFam = computeFam
 		}
 	}
-	if computeQueueFamily == -1 {
-		return errors.New("no compute queue found on GPU device")
+
+	if bestDev == 0 || bestQueueFam == -1 {
+		return errors.New("no compatible Vulkan compute device with shaderInt64 found")
 	}
-	c.queueFam = uint32(computeQueueFamily)
+
+	c.physDev = bestDev
+	c.queueFam = uint32(bestQueueFam)
+	c.hasShaderInt64 = true
 
 	priority := float32(1.0)
 	queueCI := VkDeviceQueueCreateInfo{
@@ -103,16 +153,9 @@ func (c *HardwareContext) initDevice() error {
 		QueueCount:       1,
 		PQueuePriorities: &priority,
 	}
-	getFeats := c.dll.NewProc("vkGetPhysicalDeviceFeatures")
-	var supportedFeatures VkPhysicalDeviceFeatures
-	getFeats.Call(c.physDev, uintptr(unsafe.Pointer(&supportedFeatures)))
 
-	var enabledFeatures VkPhysicalDeviceFeatures
-	if supportedFeatures.ShaderInt64 != 0 {
-		enabledFeatures.ShaderInt64 = 1
-		c.hasShaderInt64 = true
-	} else {
-		return errors.New("Vulkan physical device does not support mandatory feature: shaderInt64")
+	enabledFeatures := VkPhysicalDeviceFeatures{
+		ShaderInt64: 1,
 	}
 
 	deviceCI := VkDeviceCreateInfo{
@@ -198,6 +241,7 @@ func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, err
 
 	memType := c.findMemoryType(reqs.MemoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 	if memType == -1 {
+		syscall.SyscallN(c.getProc("vkDestroyBuffer"), c.device, uintptr(buf), 0)
 		return nil, errors.New("host visible + coherent memory type unavailable")
 	}
 
@@ -209,13 +253,24 @@ func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, err
 	var mem uint64
 	r, _, _ = syscall.SyscallN(c.getProc("vkAllocateMemory"), c.device, uintptr(unsafe.Pointer(&allocInfo)), 0, uintptr(unsafe.Pointer(&mem)))
 	if r != 0 {
+		syscall.SyscallN(c.getProc("vkDestroyBuffer"), c.device, uintptr(buf), 0)
 		return nil, fmt.Errorf("vkAllocateMemory error: %d", r)
 	}
 
-	syscall.SyscallN(c.getProc("vkBindBufferMemory"), c.device, uintptr(buf), uintptr(mem), 0)
+	r, _, _ = syscall.SyscallN(c.getProc("vkBindBufferMemory"), c.device, uintptr(buf), uintptr(mem), 0)
+	if r != 0 {
+		syscall.SyscallN(c.getProc("vkFreeMemory"), c.device, uintptr(mem), 0)
+		syscall.SyscallN(c.getProc("vkDestroyBuffer"), c.device, uintptr(buf), 0)
+		return nil, fmt.Errorf("vkBindBufferMemory error: %d", r)
+	}
 
 	var mapped unsafe.Pointer
-	syscall.SyscallN(c.getProc("vkMapMemory"), c.device, uintptr(mem), 0, uintptr(size), 0, uintptr(unsafe.Pointer(&mapped)))
+	r, _, _ = syscall.SyscallN(c.getProc("vkMapMemory"), c.device, uintptr(mem), 0, uintptr(size), 0, uintptr(unsafe.Pointer(&mapped)))
+	if r != 0 {
+		syscall.SyscallN(c.getProc("vkFreeMemory"), c.device, uintptr(mem), 0)
+		syscall.SyscallN(c.getProc("vkDestroyBuffer"), c.device, uintptr(buf), 0)
+		return nil, fmt.Errorf("vkMapMemory error: %d", r)
+	}
 
 	return &GpuBuffer{
 		ctx:    c,
@@ -228,6 +283,9 @@ func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, err
 
 // WriteInt32 copies a slice of int32 directly into the mapped memory.
 func (b *GpuBuffer) WriteInt32(data []int32) {
+	if len(data) == 0 {
+		return
+	}
 	byteLen := len(data) * 4
 	if uint64(byteLen) > b.size {
 		panic("buffer overflow on WriteInt32")
@@ -239,6 +297,9 @@ func (b *GpuBuffer) WriteInt32(data []int32) {
 
 // WriteUint32 copies a slice of uint32 directly into the mapped memory.
 func (b *GpuBuffer) WriteUint32(data []uint32) {
+	if len(data) == 0 {
+		return
+	}
 	byteLen := len(data) * 4
 	if uint64(byteLen) > b.size {
 		panic("buffer overflow on WriteUint32")
@@ -248,14 +309,51 @@ func (b *GpuBuffer) WriteUint32(data []uint32) {
 	copy(dst, src)
 }
 
-// ReadInt32 reads back a slice of int32 from host-coherent mapped memory.
-func (b *GpuBuffer) ReadInt32(count int) []int32 {
-	return unsafe.Slice((*int32)(b.mapped), count)
+// WriteInt64 copies a slice of int64 directly into the mapped memory.
+func (b *GpuBuffer) WriteInt64(data []int64) {
+	if len(data) == 0 {
+		return
+	}
+	byteLen := len(data) * 8
+	if uint64(byteLen) > b.size {
+		panic("buffer overflow on WriteInt64")
+	}
+	src := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen)
+	dst := unsafe.Slice((*byte)(b.mapped), byteLen)
+	copy(dst, src)
 }
 
-// ReadUint32 reads back a slice of uint32 from host-coherent mapped memory.
+// ReadInt32 reads back a copy of int32 elements into Go-owned memory.
+func (b *GpuBuffer) ReadInt32(count int) []int32 {
+	if count == 0 {
+		return nil
+	}
+	src := unsafe.Slice((*int32)(b.mapped), count)
+	out := make([]int32, count)
+	copy(out, src)
+	return out
+}
+
+// ReadUint32 reads back a copy of uint32 elements into Go-owned memory.
 func (b *GpuBuffer) ReadUint32(count int) []uint32 {
-	return unsafe.Slice((*uint32)(b.mapped), count)
+	if count == 0 {
+		return nil
+	}
+	src := unsafe.Slice((*uint32)(b.mapped), count)
+	out := make([]uint32, count)
+	copy(out, src)
+	return out
+}
+
+// ReadInt64 reads back a copy of int64 elements into Go-owned memory.
+func (b *GpuBuffer) ReadInt64(count int) []int64 {
+	if count == 0 {
+		return nil
+	}
+	src := unsafe.Slice((*int64)(b.mapped), count)
+	out := make([]int64, count)
+	copy(out, src)
+	return out
 }
 
 // Clear zeroes out the mapped memory buffer.

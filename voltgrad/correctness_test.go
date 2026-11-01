@@ -2,6 +2,7 @@ package voltgrad
 
 import (
 	"math"
+	"math/rand"
 	"reflect"
 	"testing"
 )
@@ -201,4 +202,180 @@ func TestGPUCPUOptimizerDiscrepancies(t *testing.T) {
 	}
 
 	t.Log(">>> GPU and CPU optimizer parity verified across SGD, Momentum, Adam-Q, and Weight Decay! <<<")
+}
+
+// TestFull64BitGPUDBWOptimizer validates that true 64-bit parameters (>32-bit values) are processed on GPU with zero truncation.
+func TestFull64BitGPUDBWOptimizer(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Fatalf("Failed to init hardware: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		t.Fatalf("Failed to init GPU engine: %v", err)
+	}
+	defer gpu.Close()
+
+	testWeights := []int64{
+		int64(1) << 35,
+		-(int64(1) << 45),
+		math.MaxInt64 - 100000,
+		math.MinInt64 + 100000,
+	}
+
+	testGrads := []int64{
+		int64(1) << 30,
+		-(int64(1) << 32),
+		int64(100000),
+		-int64(100000),
+	}
+
+	cfg := OptimizerConfig{
+		Type:            OptimizerSGDMomentum,
+		LearningRateQ16: 655,   // ~0.01
+		MomentumBeta:    58982, // 0.9
+		WeightDecayQ16:  65,    // ~0.001
+		FractionalBits:  Q16FractionalBits,
+	}
+
+	paramGPU := NewDynamicBitTensor([]int{len(testWeights)}, 64)
+	for i, w := range testWeights {
+		paramGPU.Set(i, w)
+	}
+	paramCPU := paramGPU.Clone()
+
+	gradGPU := NewDynamicBitTensor([]int{len(testGrads)}, 64)
+	for i, g := range testGrads {
+		gradGPU.Set(i, g)
+	}
+	gradCPU := gradGPU.Clone()
+
+	velGPU := NewDynamicBitTensor([]int{len(testWeights)}, 64)
+	velCPU := velGPU.Clone()
+
+	// CPU step
+	cpuOpt := &DynamicBitOptimizer{
+		config:     cfg,
+		velocities: [][]*DynamicBitTensor{{velCPU}},
+	}
+	mockModel := &singleTensorModel{param: paramCPU, grad: gradCPU}
+	_, err = cpuOpt.Step(mockModel)
+	if err != nil {
+		t.Fatalf("CPU step failed: %v", err)
+	}
+
+	// GPU step
+	targetBits, err := gpu.OptimizerStep(paramGPU, gradGPU, velGPU, cfg)
+	if err != nil {
+		t.Fatalf("GPU OptimizerStep failed: %v", err)
+	}
+
+	// Verify bit widths
+	if paramGPU.BitWidth() != paramCPU.BitWidth() {
+		t.Errorf("Bit width mismatch: GPU=%d, CPU=%d (targetBits=%d)", paramGPU.BitWidth(), paramCPU.BitWidth(), targetBits)
+	}
+
+	// Verify 64-bit parameter values
+	for i := 0; i < len(testWeights); i++ {
+		cpuVal := paramCPU.Get(i)
+		gpuVal := paramGPU.Get(i)
+		if cpuVal != gpuVal {
+			t.Errorf("Index %d parameter mismatch: CPU=%d, GPU=%d", i, cpuVal, gpuVal)
+		}
+
+		cpuV := velCPU.Get(i)
+		gpuV := velGPU.Get(i)
+		if cpuV != gpuV {
+			t.Errorf("Index %d velocity mismatch: CPU=%d, GPU=%d", i, cpuV, gpuV)
+		}
+	}
+
+	t.Log(">>> Full 64-bit GPU DBW parameter & velocity updates verified bit-for-bit with CPU! <<<")
+}
+
+// TestRandomizedGPUCPUParity verifies randomized tensors, bit-widths, and optimizer updates match between GPU and CPU.
+func TestRandomizedGPUCPUParity(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Fatalf("Failed to init hardware: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		t.Fatalf("Failed to init GPU engine: %v", err)
+	}
+	defer gpu.Close()
+
+	rng := rand.New(rand.NewSource(42))
+	optTypes := []OptimizerType{OptimizerSGD, OptimizerSGDMomentum, OptimizerAdamQ}
+
+	for trial := 0; trial < 10; trial++ {
+		size := rng.Intn(64) + 8     // 8..71 elements
+		initBits := rng.Intn(40) + 2 // 2..41 bits
+		minV, maxV := MinMax64(initBits)
+		span := maxV - minV
+		if span <= 0 || span > math.MaxInt64/2 {
+			span = 1000000
+		}
+
+		paramGPU := NewDynamicBitTensor([]int{size}, initBits)
+		gradGPU := NewDynamicBitTensor([]int{size}, initBits)
+		velGPU := NewDynamicBitTensor([]int{size}, initBits)
+
+		for i := 0; i < size; i++ {
+			v := minV + (rng.Int63() % span)
+			paramGPU.Set(i, v)
+			g := (rng.Int63() % 65536) - 32768
+			gradGPU.Set(i, g)
+		}
+
+		paramCPU := paramGPU.Clone()
+		gradCPU := gradGPU.Clone()
+		velCPU := velGPU.Clone()
+
+		cfg := OptimizerConfig{
+			Type:            optTypes[rng.Intn(len(optTypes))],
+			LearningRateQ16: int32(rng.Intn(6553) + 100),
+			MomentumBeta:    int32(rng.Intn(30000) + 30000),
+			WeightDecayQ16:  int32(rng.Intn(1000)),
+			FractionalBits:  Q16FractionalBits,
+		}
+
+		// CPU step
+		cpuOpt := &DynamicBitOptimizer{
+			config:     cfg,
+			velocities: [][]*DynamicBitTensor{{velCPU}},
+		}
+		mockModel := &singleTensorModel{param: paramCPU, grad: gradCPU}
+		_, err = cpuOpt.Step(mockModel)
+		if err != nil {
+			t.Fatalf("Trial %d: CPU step failed: %v", trial, err)
+		}
+
+		// GPU step
+		_, err = gpu.OptimizerStep(paramGPU, gradGPU, velGPU, cfg)
+		if err != nil {
+			t.Fatalf("Trial %d: GPU OptimizerStep failed: %v", trial, err)
+		}
+
+		// Compare bit widths
+		if paramGPU.BitWidth() != paramCPU.BitWidth() {
+			t.Fatalf("Trial %d: BitWidth mismatch: CPU=%d, GPU=%d", trial, paramCPU.BitWidth(), paramGPU.BitWidth())
+		}
+
+		// Compare values
+		for i := 0; i < size; i++ {
+			if paramCPU.Get(i) != paramGPU.Get(i) {
+				t.Fatalf("Trial %d: Param[%d] mismatch: CPU=%d, GPU=%d", trial, i, paramCPU.Get(i), paramGPU.Get(i))
+			}
+			if velCPU.Get(i) != velGPU.Get(i) {
+				t.Fatalf("Trial %d: Velocity[%d] mismatch: CPU=%d, GPU=%d", trial, i, velCPU.Get(i), velGPU.Get(i))
+			}
+		}
+	}
+
+	t.Log(">>> Randomized GPU/CPU parity verified across all randomized trials! <<<")
 }
