@@ -1,0 +1,45 @@
+#version 450
+#extension GL_ARB_gpu_shader_int64 : enable
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer InBatchDOut { int d_out[]; }; // [batch_size * out_dim]
+layout(std430, binding = 1) readonly buffer InBatchX { int x[]; };         // [batch_size * in_dim]
+layout(std430, binding = 2) buffer GradW { int64_t grad_w[]; };            // [out_dim * in_dim]
+layout(std430, binding = 3) buffer GradBias { int64_t grad_bias[]; };      // [out_dim]
+
+layout(push_constant) uniform PushConstants {
+    uint in_dim;
+    uint out_dim;
+    uint batch_size;
+    uint shift;
+    uint use_bias;
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint total = pc.in_dim * pc.out_dim;
+    if (idx >= total) return;
+    
+    uint r = idx / pc.in_dim;
+    uint c = idx % pc.in_dim;
+    
+    int64_t sum_g = 0l;
+    for (uint b = 0u; b < pc.batch_size; b++) {
+        int d_val = d_out[b * pc.out_dim + r];
+        if (d_val != 0) {
+            int x_val = x[b * pc.in_dim + c];
+            int64_t prod = int64_t(d_val) * int64_t(x_val);
+            sum_g += (prod >> pc.shift);
+        }
+    }
+    grad_w[idx] += sum_g;
+    
+    if (c == 0u && pc.use_bias != 0u) {
+        int64_t sum_bias = 0l;
+        for (uint b = 0u; b < pc.batch_size; b++) {
+            sum_bias += int64_t(d_out[b * pc.out_dim + r]);
+        }
+        grad_bias[r] += sum_bias;
+    }
+}

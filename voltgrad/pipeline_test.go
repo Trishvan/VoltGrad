@@ -96,6 +96,59 @@ func (m *ExampleMLPArchitecture) Backward(ctx *ComputeContext, dLoss []int32) er
 	return err
 }
 
+func (m *ExampleMLPArchitecture) ForwardBatched(ctx *ComputeContext, x []int32, batchSize int) ([]int32, error) {
+	// 1. FC1 Forward Batched (GPU accelerated GEMM)
+	h1, err := m.fc1.ForwardBatchedCtx(ctx, x, batchSize, Q16FractionalBits)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. ReLU Activation (GPU accelerated)
+	var h1Act []int32
+	if ctx != nil && ctx.IsGPU() {
+		h1Act, err = ctx.GpuEngine().ReLUForward(h1)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		h1Act = ReLU(h1)
+	}
+
+	ctx.SetScratch("batched_x", x)
+	ctx.SetScratch("batched_h1_pre", h1)
+	ctx.SetScratch("batched_h1_act", h1Act)
+
+	// 3. FC2 Forward Batched (GPU accelerated GEMM)
+	return m.fc2.ForwardBatchedCtx(ctx, h1Act, batchSize, Q16FractionalBits)
+}
+
+func (m *ExampleMLPArchitecture) BackwardBatched(ctx *ComputeContext, dLoss []int32, batchSize int) error {
+	x, _ := ctx.GetScratch("batched_x")
+	h1Pre, _ := ctx.GetScratch("batched_h1_pre")
+	h1Act, _ := ctx.GetScratch("batched_h1_act")
+
+	// 1. FC2 Backward Batched (GPU accelerated GEMM)
+	dH1Act, err := m.fc2.BackwardBatchedCtx(ctx, dLoss, h1Act.([]int32), batchSize, Q16FractionalBits)
+	if err != nil {
+		return err
+	}
+
+	// 2. ReLU Backward Batched (GPU accelerated)
+	var dH1 []int32
+	if ctx != nil && ctx.IsGPU() {
+		dH1, err = ctx.GpuEngine().ReLUBackward(dH1Act, h1Pre.([]int32))
+		if err != nil {
+			return err
+		}
+	} else {
+		dH1 = ReLUBackward(dH1Act, h1Pre.([]int32))
+	}
+
+	// 3. FC1 Backward Batched (GPU accelerated GEMM)
+	_, err = m.fc1.BackwardBatchedCtx(ctx, dH1, x.([]int32), batchSize, Q16FractionalBits)
+	return err
+}
+
 func TestVulkanTrainingPipelineWithDBW(t *testing.T) {
 	// 1. Initialize user custom architecture (starting with 2-bit weights!)
 	model := NewExampleMLPArchitecture()

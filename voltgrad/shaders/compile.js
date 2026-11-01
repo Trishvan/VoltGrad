@@ -6,6 +6,12 @@ const files = [
     'matmul_forward',
     'matmul_backward_dx',
     'matmul_backward_dw',
+    'matmul_batched_forward',
+    'matmul_batched_backward_dx',
+    'matmul_batched_backward_dw',
+    'relu_forward',
+    'relu_backward',
+    'loss_mse',
     'optimizer_step',
     'repack_dbw'
 ];

@@ -127,13 +127,17 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 	ctx.SetGpuEngine(p.gpu)
 
 	if p.config.Verbose {
+		devRep := p.hw.DeviceReport()
 		fmt.Printf("========================================================================\n")
 		fmt.Printf("   VULKAN TRAINING PIPELINE — Adaptive, Vendor-Neutral GPU Computing for Go\n")
 		fmt.Printf("========================================================================\n")
+		if devRep.DeviceName != "" {
+			fmt.Printf(" GPU Device: %s (%s) [%s]\n", devRep.DeviceName, devRep.DeviceType, devRep.VendorName)
+			fmt.Printf(" Driver: %s | Vulkan API: %s | Total VRAM: %d MB\n", devRep.DriverVersion, devRep.APIVersion, devRep.TotalDeviceLocal/(1024*1024))
+		}
 		fmt.Printf(" Model Architecture: %s\n", model.Name())
 		fmt.Printf(" Samples: %d, Batch Size: %d, Epochs: %d\n", n, p.config.BatchSize, p.config.Epochs)
-		fmt.Printf(" Mandatory Dynamic Bit Widening (DBW): ACTIVE\n")
-		fmt.Printf(" Hardware Backend: Vulkan Host-Coherent Compute Engine\n")
+		fmt.Printf(" Dynamic Bit Widening (DBW): ACTIVE\n")
 		fmt.Printf("========================================================================\n\n")
 	}
 
@@ -151,27 +155,64 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 
 			model.ZeroGrad()
 
-			// Iterate samples in batch
-			for idx := bStart; idx < bEnd; idx++ {
-				x := inputs[idx]
-				y := targets[idx]
+			if batchedModel, isBatched := model.(BatchedModelArchitecture); isBatched {
+				currentBatchSize := bEnd - bStart
+				inDim := len(inputs[0])
+				targetDim := len(targets[0])
+				flatX := make([]int32, currentBatchSize*inDim)
+				flatY := make([]int32, currentBatchSize*targetDim)
 
-				// 1. Forward Pass (User Architecture)
-				preds, err := model.Forward(ctx, x)
-				if err != nil {
-					return nil, fmt.Errorf("forward pass failed at epoch %d sample %d: %w", epoch, idx, err)
+				for i, idx := 0, bStart; idx < bEnd; i, idx = i+1, idx+1 {
+					copy(flatX[i*inDim:(i+1)*inDim], inputs[idx])
+					copy(flatY[i*targetDim:(i+1)*targetDim], targets[idx])
 				}
 
-				// 2. Loss & Gradient
-				lossVal, dLoss, err := ComputeLoss(p.config.LossType, preds, y, p.config.OptimizerConfig.FractionalBits)
+				// 1. Batched Forward Pass
+				preds, err := batchedModel.ForwardBatched(ctx, flatX, currentBatchSize)
+				if err != nil {
+					return nil, fmt.Errorf("batched forward pass failed at epoch %d: %w", epoch, err)
+				}
+
+				// 2. Batched Loss & Gradient
+				var lossVal int32
+				var dLoss []int32
+				if ctx.IsGPU() && p.config.LossType == LossMSE {
+					lossVal, dLoss, err = ctx.GpuEngine().MSELoss(preds, flatY, p.config.OptimizerConfig.FractionalBits)
+				} else {
+					lossVal, dLoss, err = ComputeLoss(p.config.LossType, preds, flatY, p.config.OptimizerConfig.FractionalBits)
+				}
 				if err != nil {
 					return nil, fmt.Errorf("loss computation failed: %w", err)
 				}
-				totalLoss += int64(lossVal)
+				totalLoss += int64(lossVal) * int64(currentBatchSize)
 
-				// 3. Backward Pass (User Architecture)
-				if err := model.Backward(ctx, dLoss); err != nil {
-					return nil, fmt.Errorf("backward pass failed: %w", err)
+				// 3. Batched Backward Pass
+				if err := batchedModel.BackwardBatched(ctx, dLoss, currentBatchSize); err != nil {
+					return nil, fmt.Errorf("batched backward pass failed: %w", err)
+				}
+			} else {
+				// Iterate samples in batch
+				for idx := bStart; idx < bEnd; idx++ {
+					x := inputs[idx]
+					y := targets[idx]
+
+					// 1. Forward Pass (User Architecture)
+					preds, err := model.Forward(ctx, x)
+					if err != nil {
+						return nil, fmt.Errorf("forward pass failed at epoch %d sample %d: %w", epoch, idx, err)
+					}
+
+					// 2. Loss & Gradient
+					lossVal, dLoss, err := ComputeLoss(p.config.LossType, preds, y, p.config.OptimizerConfig.FractionalBits)
+					if err != nil {
+						return nil, fmt.Errorf("loss computation failed: %w", err)
+					}
+					totalLoss += int64(lossVal)
+
+					// 3. Backward Pass (User Architecture)
+					if err := model.Backward(ctx, dLoss); err != nil {
+						return nil, fmt.Errorf("backward pass failed: %w", err)
+					}
 				}
 			}
 

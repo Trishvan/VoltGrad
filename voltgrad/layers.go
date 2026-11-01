@@ -52,6 +52,32 @@ func (l *LinearLayer) ForwardCtx(ctx *ComputeContext, x []int32, shift uint) ([]
 	return l.Forward(x, shift)
 }
 
+// ForwardBatched computes output for a batch: Y[B, OutDim] = (X[B, InDim] * W^T) >> shift + bias.
+func (l *LinearLayer) ForwardBatched(x []int32, batchSize int, shift uint) ([]int32, error) {
+	out := make([]int32, batchSize*l.OutDim)
+	for b := 0; b < batchSize; b++ {
+		sampleX := x[b*l.InDim : (b+1)*l.InDim]
+		sampleY, err := l.Forward(sampleX, shift)
+		if err != nil {
+			return nil, err
+		}
+		copy(out[b*l.OutDim:(b+1)*l.OutDim], sampleY)
+	}
+	return out, nil
+}
+
+// ForwardBatchedCtx computes batched output using GPU acceleration when available, with automatic CPU fallback.
+func (l *LinearLayer) ForwardBatchedCtx(ctx *ComputeContext, x []int32, batchSize int, shift uint) ([]int32, error) {
+	if ctx != nil && ctx.IsGPU() {
+		var bias *DynamicBitTensor
+		if l.UseBias {
+			bias = l.Bias
+		}
+		return ctx.GpuEngine().MatMulBatchedForward(l.Weight, x, batchSize, bias, shift)
+	}
+	return l.ForwardBatched(x, batchSize, shift)
+}
+
 // Backward calculates gradients dW and dX.
 func (l *LinearLayer) Backward(dOut []int32, x []int32, shift uint) ([]int32, error) {
 	if l.UseBias {
@@ -68,6 +94,33 @@ func (l *LinearLayer) BackwardCtx(ctx *ComputeContext, dOut []int32, x []int32, 
 		return ctx.GpuEngine().MatMulBackward(dOut, x, l.Weight, l.GradW, l.GradBias, shift)
 	}
 	return l.Backward(dOut, x, shift)
+}
+
+// BackwardBatched calculates gradients across an entire batch on the CPU.
+func (l *LinearLayer) BackwardBatched(dOut []int32, x []int32, batchSize int, shift uint) ([]int32, error) {
+	dX := make([]int32, batchSize*l.InDim)
+	for b := 0; b < batchSize; b++ {
+		sampleDOut := dOut[b*l.OutDim : (b+1)*l.OutDim]
+		sampleX := x[b*l.InDim : (b+1)*l.InDim]
+		sampleDX, err := l.Backward(sampleDOut, sampleX, shift)
+		if err != nil {
+			return nil, err
+		}
+		copy(dX[b*l.InDim:(b+1)*l.InDim], sampleDX)
+	}
+	return dX, nil
+}
+
+// BackwardBatchedCtx calculates gradients using physical GPU batched acceleration when available.
+func (l *LinearLayer) BackwardBatchedCtx(ctx *ComputeContext, dOut []int32, x []int32, batchSize int, shift uint) ([]int32, error) {
+	if ctx != nil && ctx.IsGPU() {
+		var gradBias *DynamicBitTensor
+		if l.UseBias {
+			gradBias = l.GradBias
+		}
+		return ctx.GpuEngine().MatMulBatchedBackward(dOut, x, batchSize, l.Weight, l.GradW, gradBias, shift)
+	}
+	return l.BackwardBatched(dOut, x, batchSize, shift)
 }
 
 // ZeroGrad zeroes out gradient tensors.

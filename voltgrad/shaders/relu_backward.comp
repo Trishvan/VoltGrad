@@ -1,0 +1,17 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer InDOut { int d_out[]; };
+layout(std430, binding = 1) readonly buffer InX { int x[]; };
+layout(std430, binding = 2) writeonly buffer OutDX { int d_x[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint count;
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.count) return;
+    d_x[idx] = (x[idx] > 0) ? d_out[idx] : 0;
+}

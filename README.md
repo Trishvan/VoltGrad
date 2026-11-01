@@ -17,19 +17,19 @@ All code lives in this standalone folder `voltgrad/` with **zero external depend
 | File | Purpose |
 | :--- | :--- |
 | [`tensor.go`](voltgrad/tensor.go) | `DynamicBitTensor` with mandatory Dynamic Bit Widening ($W \in [2, 64]$ bits), bit-packing, zero quantization clipping. |
-| [`model.go`](voltgrad/model.go) | `ModelArchitecture` interface (`Forward`, `Backward`, `Parameters`, `Gradients`) & `ComputeLoss` (MSE, Cross-Entropy, Brier). |
-| [`hardware.go`](voltgrad/hardware.go) | Direct Vulkan GPU discovery, logical device initialization, and host-coherent zero-copy memory mapping. |
+| [`model.go`](voltgrad/model.go) | `ModelArchitecture` & `BatchedModelArchitecture` interfaces, `ComputeLoss` (MSE, Cross-Entropy, Brier). |
+| [`hardware.go`](voltgrad/hardware.go) | Direct Vulkan GPU discovery, logical device initialization, host-coherent memory mapping, and `DeviceReport`. |
+| [`buffer_pool.go`](voltgrad/buffer_pool.go) | Zero-allocation power-of-two capacity bucketing for Vulkan host-coherent storage buffers. |
 | [`kernel.go`](voltgrad/kernel.go) | Generic SPIR-V compute kernel manager with arbitrary storage buffer descriptor sets and push constants. |
-| [`gpu_engine.go`](voltgrad/gpu_engine.go) | Coordinates GPU MatMul Forward, MatMul Backward ($dX, dW$), GPU Optimizer, and GPU DBW repacking. |
+| [`gpu_engine.go`](voltgrad/gpu_engine.go) | Coordinates GPU Batched MatMul, Backpropagation, GPU Activations (ReLU), GPU Loss (MSE), and DBW Optimizer. |
 | [`pipeline.go`](voltgrad/pipeline.go) | Vulkan compute shader compilation, pipeline layouts, push constants, and dispatch execution. |
 | [`optimizer.go`](voltgrad/optimizer.go) | `DynamicBitOptimizer` implementing $w(t+1) = w(t) - \lfloor \eta \cdot g / 2^{Q_f} \rfloor$ on GPU/CPU with DBW auto-widening. |
-| [`layers.go`](voltgrad/layers.go) | Reusable building blocks (`LinearLayer`, MatMul, ReLU) with GPU and CPU forward/backward differentiation. |
+| [`layers.go`](voltgrad/layers.go) | Reusable building blocks (`LinearLayer`, MatMul, Batched GEMM) with GPU and CPU forward/backward differentiation. |
 | [`ops.go`](voltgrad/ops.go) | Fixed-point integer operations (MatMulVec64, Softmax, ReLU, activation backward passes). |
-| [`trainer.go`](voltgrad/trainer.go) | `VulkanTrainingPipeline` coordinating the training loop, epochs, batching, GPU dispatch, and DBW logging. |
-| [`pipeline_test.go`](voltgrad/pipeline_test.go) | Complete working example showing custom 2-layer MLP training with live DBW bit-depth expansion. |
-| [`gpu_features_test.go`](voltgrad/gpu_features_test.go) | Unit tests explicitly verifying GPU matrix multiplication and GPU optimizer with DBW bit-for-bit. |
-| [`correctness_test.go`](voltgrad/correctness_test.go) | Test suite covering `shaderInt64` feature detection, true 64-bit DBW values (`1<<35`, `1<<45`, `math.MaxInt64`), boundaries, and randomized GPU/CPU parity. |
-| [`shaders/`](voltgrad/shaders/) | GLSL compute shader sources (`.comp`), compiled SPIR-V binaries (`.spv`), compilation script, and documentation. |
+| [`trainer.go`](voltgrad/trainer.go) | `VulkanTrainingPipeline` coordinating training epochs, batched GEMM dispatch, and DBW logging. |
+| [`vulkan_loader_windows.go`](voltgrad/vulkan_loader_windows.go) / [`_unix.go`](voltgrad/vulkan_loader_unix.go) | Zero-CGO cross-platform dynamic Vulkan loader for Windows (`vulkan-1.dll`), Linux (`libvulkan.so`), and macOS (`libvulkan.dylib`). |
+| [`gpu_performance_test.go`](voltgrad/gpu_performance_test.go) | Performance and parity suite for Batched GEMM, GPU Activations, MSE Loss, and Device Telemetry. |
+| [`shaders/`](voltgrad/shaders/) | GLSL compute shader sources (GEMM forward/backward, batched GEMM, ReLU, Loss, DBW repack, Optimizer), compiled SPIR-V bytecode, and build scripts. |
 
 ---
 
@@ -180,12 +180,12 @@ PASS
 - [x] Update README examples.
 
 ### VoltGrad 0.3 — GPU performance (Priority 2)
-- [ ] Batched GEMM.
-- [ ] Persistent GPU allocations.
-- [ ] Buffer pooling.
-- [ ] Asynchronous command execution.
-- [ ] GPU activation and reduction kernels.
-- [ ] GPU profiling and timestamps.
+- [x] Batched GEMM (`MatMulBatchedForward`, `MatMulBatchedBackward`, `BatchedModelArchitecture`).
+- [x] Persistent GPU allocations.
+- [x] Buffer pooling (`BufferPool` with power-of-two capacity bucketing).
+- [x] Asynchronous command execution.
+- [x] GPU activation and reduction kernels (`ReLUForward`, `ReLUBackward`, `MSELoss`).
+- [x] GPU profiling and timestamps (structured execution telemetry and hardware reporting).
 
 ### VoltGrad 0.4 — Adaptive computing
 - [ ] Block-wise DBW.
@@ -195,9 +195,9 @@ PASS
 - [ ] Execution graph.
 
 ### VoltGrad 1.0 — Production runtime
-- [ ] Cross-platform Vulkan loader.
+- [x] Cross-platform Vulkan loader (Windows DLL, Linux `.so`, macOS `.dylib` / MoltenVK with zero CGO).
 - [ ] CPU/Vulkan backend selection.
-- [ ] Device selection and capability reporting.
+- [x] Device selection and capability reporting (`DeviceReport` with vendor, VRAM, and API introspection).
 - [ ] Model serialization.
 - [ ] C ABI and language bindings.
-- [ ] Benchmark and compatibility suite.
+- [x] Benchmark and compatibility suite.

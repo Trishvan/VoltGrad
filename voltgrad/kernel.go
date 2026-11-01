@@ -3,7 +3,6 @@ package voltgrad
 import (
 	_ "embed"
 	"fmt"
-	"syscall"
 	"unsafe"
 )
 
@@ -15,6 +14,24 @@ var matmulBackwardDxSPV []byte
 
 //go:embed shaders/matmul_backward_dw.spv
 var matmulBackwardDwSPV []byte
+
+//go:embed shaders/matmul_batched_forward.spv
+var matmulBatchedForwardSPV []byte
+
+//go:embed shaders/matmul_batched_backward_dx.spv
+var matmulBatchedBackwardDxSPV []byte
+
+//go:embed shaders/matmul_batched_backward_dw.spv
+var matmulBatchedBackwardDwSPV []byte
+
+//go:embed shaders/relu_forward.spv
+var reluForwardSPV []byte
+
+//go:embed shaders/relu_backward.spv
+var reluBackwardSPV []byte
+
+//go:embed shaders/loss_mse.spv
+var lossMseSPV []byte
 
 //go:embed shaders/optimizer_step.spv
 var optimizerStepSPV []byte
@@ -50,7 +67,7 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		PCode:    (*uint32)(unsafe.Pointer(&spv[0])),
 	}
 	var shaderModule uint64
-	r, _, _ := syscall.SyscallN(hw.getProc("vkCreateShaderModule"), hw.device, uintptr(unsafe.Pointer(&shaderCI)), 0, uintptr(unsafe.Pointer(&shaderModule)))
+	r := vkSyscall(hw.getProc("vkCreateShaderModule"), hw.device, uintptr(unsafe.Pointer(&shaderCI)), 0, uintptr(unsafe.Pointer(&shaderModule)))
 	if r != 0 {
 		return nil, fmt.Errorf("vkCreateShaderModule failed: %d", r)
 	}
@@ -71,9 +88,9 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		PBindings:    &bindings[0],
 	}
 	var descLayout uint64
-	r, _, _ = syscall.SyscallN(hw.getProc("vkCreateDescriptorSetLayout"), hw.device, uintptr(unsafe.Pointer(&dslCI)), 0, uintptr(unsafe.Pointer(&descLayout)))
+	r = vkSyscall(hw.getProc("vkCreateDescriptorSetLayout"), hw.device, uintptr(unsafe.Pointer(&dslCI)), 0, uintptr(unsafe.Pointer(&descLayout)))
 	if r != 0 {
-		syscall.SyscallN(hw.getProc("vkDestroyShaderModule"), hw.device, uintptr(shaderModule), 0)
+		vkSyscall(hw.getProc("vkDestroyShaderModule"), hw.device, uintptr(shaderModule), 0)
 		return nil, fmt.Errorf("vkCreateDescriptorSetLayout failed: %d", r)
 	}
 
@@ -91,18 +108,18 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 			PushConstantRangeCount: 1,
 			PPushConstantRanges:    &pushConst,
 		}
-		r, _, _ = syscall.SyscallN(hw.getProc("vkCreatePipelineLayout"), hw.device, uintptr(unsafe.Pointer(&pipeLayoutCI)), 0, uintptr(unsafe.Pointer(&pipeLayout)))
+		r = vkSyscall(hw.getProc("vkCreatePipelineLayout"), hw.device, uintptr(unsafe.Pointer(&pipeLayoutCI)), 0, uintptr(unsafe.Pointer(&pipeLayout)))
 	} else {
 		pipeLayoutCI := VkPipelineLayoutCreateInfo{
 			SType:          VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 			SetLayoutCount: 1,
 			PSetLayouts:    &descLayout,
 		}
-		r, _, _ = syscall.SyscallN(hw.getProc("vkCreatePipelineLayout"), hw.device, uintptr(unsafe.Pointer(&pipeLayoutCI)), 0, uintptr(unsafe.Pointer(&pipeLayout)))
+		r = vkSyscall(hw.getProc("vkCreatePipelineLayout"), hw.device, uintptr(unsafe.Pointer(&pipeLayoutCI)), 0, uintptr(unsafe.Pointer(&pipeLayout)))
 	}
 	if r != 0 {
-		syscall.SyscallN(hw.getProc("vkDestroyDescriptorSetLayout"), hw.device, uintptr(descLayout), 0)
-		syscall.SyscallN(hw.getProc("vkDestroyShaderModule"), hw.device, uintptr(shaderModule), 0)
+		vkSyscall(hw.getProc("vkDestroyDescriptorSetLayout"), hw.device, uintptr(descLayout), 0)
+		vkSyscall(hw.getProc("vkDestroyShaderModule"), hw.device, uintptr(shaderModule), 0)
 		return nil, fmt.Errorf("vkCreatePipelineLayout failed: %d", r)
 	}
 
@@ -118,11 +135,11 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		Layout: pipeLayout,
 	}
 	var compPipeline uint64
-	r, _, _ = syscall.SyscallN(hw.getProc("vkCreateComputePipelines"), hw.device, 0, 1, uintptr(unsafe.Pointer(&pipeCI)), 0, uintptr(unsafe.Pointer(&compPipeline)))
+	r = vkSyscall(hw.getProc("vkCreateComputePipelines"), hw.device, 0, 1, uintptr(unsafe.Pointer(&pipeCI)), 0, uintptr(unsafe.Pointer(&compPipeline)))
 	if r != 0 {
-		syscall.SyscallN(hw.getProc("vkDestroyPipelineLayout"), hw.device, uintptr(pipeLayout), 0)
-		syscall.SyscallN(hw.getProc("vkDestroyDescriptorSetLayout"), hw.device, uintptr(descLayout), 0)
-		syscall.SyscallN(hw.getProc("vkDestroyShaderModule"), hw.device, uintptr(shaderModule), 0)
+		vkSyscall(hw.getProc("vkDestroyPipelineLayout"), hw.device, uintptr(pipeLayout), 0)
+		vkSyscall(hw.getProc("vkDestroyDescriptorSetLayout"), hw.device, uintptr(descLayout), 0)
+		vkSyscall(hw.getProc("vkDestroyShaderModule"), hw.device, uintptr(shaderModule), 0)
 		return nil, fmt.Errorf("vkCreateComputePipelines failed: %d", r)
 	}
 
@@ -132,25 +149,25 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 
 	cleanup := func() {
 		if fence != 0 {
-			syscall.SyscallN(hw.getProc("vkDestroyFence"), hw.device, uintptr(fence), 0)
+			vkSyscall(hw.getProc("vkDestroyFence"), hw.device, uintptr(fence), 0)
 		}
 		if cmdPool != 0 {
-			syscall.SyscallN(hw.getProc("vkDestroyCommandPool"), hw.device, uintptr(cmdPool), 0)
+			vkSyscall(hw.getProc("vkDestroyCommandPool"), hw.device, uintptr(cmdPool), 0)
 		}
 		if descPool != 0 {
-			syscall.SyscallN(hw.getProc("vkDestroyDescriptorPool"), hw.device, uintptr(descPool), 0)
+			vkSyscall(hw.getProc("vkDestroyDescriptorPool"), hw.device, uintptr(descPool), 0)
 		}
 		if compPipeline != 0 {
-			syscall.SyscallN(hw.getProc("vkDestroyPipeline"), hw.device, uintptr(compPipeline), 0)
+			vkSyscall(hw.getProc("vkDestroyPipeline"), hw.device, uintptr(compPipeline), 0)
 		}
 		if pipeLayout != 0 {
-			syscall.SyscallN(hw.getProc("vkDestroyPipelineLayout"), hw.device, uintptr(pipeLayout), 0)
+			vkSyscall(hw.getProc("vkDestroyPipelineLayout"), hw.device, uintptr(pipeLayout), 0)
 		}
 		if descLayout != 0 {
-			syscall.SyscallN(hw.getProc("vkDestroyDescriptorSetLayout"), hw.device, uintptr(descLayout), 0)
+			vkSyscall(hw.getProc("vkDestroyDescriptorSetLayout"), hw.device, uintptr(descLayout), 0)
 		}
 		if shaderModule != 0 {
-			syscall.SyscallN(hw.getProc("vkDestroyShaderModule"), hw.device, uintptr(shaderModule), 0)
+			vkSyscall(hw.getProc("vkDestroyShaderModule"), hw.device, uintptr(shaderModule), 0)
 		}
 	}
 
@@ -164,7 +181,7 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		PoolSizeCount: 1,
 		PPoolSizes:    &poolSize,
 	}
-	r, _, _ = syscall.SyscallN(hw.getProc("vkCreateDescriptorPool"), hw.device, uintptr(unsafe.Pointer(&poolCI)), 0, uintptr(unsafe.Pointer(&descPool)))
+	r = vkSyscall(hw.getProc("vkCreateDescriptorPool"), hw.device, uintptr(unsafe.Pointer(&poolCI)), 0, uintptr(unsafe.Pointer(&descPool)))
 	if r != 0 {
 		cleanup()
 		return nil, fmt.Errorf("vkCreateDescriptorPool failed: %d", r)
@@ -177,7 +194,7 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		PSetLayouts:        &descLayout,
 	}
 	var descSet uint64
-	r, _, _ = syscall.SyscallN(hw.getProc("vkAllocateDescriptorSets"), hw.device, uintptr(unsafe.Pointer(&allocSet)), uintptr(unsafe.Pointer(&descSet)))
+	r = vkSyscall(hw.getProc("vkAllocateDescriptorSets"), hw.device, uintptr(unsafe.Pointer(&allocSet)), uintptr(unsafe.Pointer(&descSet)))
 	if r != 0 {
 		cleanup()
 		return nil, fmt.Errorf("vkAllocateDescriptorSets failed: %d", r)
@@ -188,7 +205,7 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		Flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
 		QueueFamilyIndex: hw.queueFam,
 	}
-	r, _, _ = syscall.SyscallN(hw.getProc("vkCreateCommandPool"), hw.device, uintptr(unsafe.Pointer(&cmdPoolCI)), 0, uintptr(unsafe.Pointer(&cmdPool)))
+	r = vkSyscall(hw.getProc("vkCreateCommandPool"), hw.device, uintptr(unsafe.Pointer(&cmdPoolCI)), 0, uintptr(unsafe.Pointer(&cmdPool)))
 	if r != 0 {
 		cleanup()
 		return nil, fmt.Errorf("vkCreateCommandPool failed: %d", r)
@@ -201,14 +218,14 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		CommandBufferCount: 1,
 	}
 	var cmdBuf uintptr
-	r, _, _ = syscall.SyscallN(hw.getProc("vkAllocateCommandBuffers"), hw.device, uintptr(unsafe.Pointer(&cmdAlloc)), uintptr(unsafe.Pointer(&cmdBuf)))
+	r = vkSyscall(hw.getProc("vkAllocateCommandBuffers"), hw.device, uintptr(unsafe.Pointer(&cmdAlloc)), uintptr(unsafe.Pointer(&cmdBuf)))
 	if r != 0 {
 		cleanup()
 		return nil, fmt.Errorf("vkAllocateCommandBuffers failed: %d", r)
 	}
 
 	fenceCI := VkFenceCreateInfo{SType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}
-	r, _, _ = syscall.SyscallN(hw.getProc("vkCreateFence"), hw.device, uintptr(unsafe.Pointer(&fenceCI)), 0, uintptr(unsafe.Pointer(&fence)))
+	r = vkSyscall(hw.getProc("vkCreateFence"), hw.device, uintptr(unsafe.Pointer(&fenceCI)), 0, uintptr(unsafe.Pointer(&fence)))
 	if r != 0 {
 		cleanup()
 		return nil, fmt.Errorf("vkCreateFence failed: %d", r)
@@ -257,10 +274,10 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 			PBufferInfo:     &bufInfos[i],
 		}
 	}
-	syscall.SyscallN(k.hw.getProc("vkUpdateDescriptorSets"), k.hw.device, uintptr(k.numBindings), uintptr(unsafe.Pointer(&writes[0])), 0, 0)
+	vkSyscall(k.hw.getProc("vkUpdateDescriptorSets"), k.hw.device, uintptr(k.numBindings), uintptr(unsafe.Pointer(&writes[0])), 0, 0)
 
 	// Reset fence
-	r, _, _ := syscall.SyscallN(k.hw.getProc("vkResetFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)))
+	r := vkSyscall(k.hw.getProc("vkResetFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)))
 	if r != 0 {
 		return fmt.Errorf("vkResetFences failed: %d", r)
 	}
@@ -270,20 +287,20 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 		SType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		Flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 	}
-	r, _, _ = syscall.SyscallN(k.hw.getProc("vkBeginCommandBuffer"), k.cmdBuf, uintptr(unsafe.Pointer(&beginInfo)))
+	r = vkSyscall(k.hw.getProc("vkBeginCommandBuffer"), k.cmdBuf, uintptr(unsafe.Pointer(&beginInfo)))
 	if r != 0 {
 		return fmt.Errorf("vkBeginCommandBuffer failed: %d", r)
 	}
 
-	syscall.SyscallN(k.hw.getProc("vkCmdBindPipeline"), k.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(k.pipeline))
-	syscall.SyscallN(k.hw.getProc("vkCmdBindDescriptorSets"), k.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(k.pipeLayout), 0, 1, uintptr(unsafe.Pointer(&k.descSet)), 0, 0)
+	vkSyscall(k.hw.getProc("vkCmdBindPipeline"), k.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(k.pipeline))
+	vkSyscall(k.hw.getProc("vkCmdBindDescriptorSets"), k.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(k.pipeLayout), 0, 1, uintptr(unsafe.Pointer(&k.descSet)), 0, 0)
 
 	if pushData != nil && pushSize > 0 {
-		syscall.SyscallN(k.hw.getProc("vkCmdPushConstants"), k.cmdBuf, uintptr(k.pipeLayout), uintptr(VK_SHADER_STAGE_COMPUTE_BIT), 0, uintptr(pushSize), uintptr(pushData))
+		vkSyscall(k.hw.getProc("vkCmdPushConstants"), k.cmdBuf, uintptr(k.pipeLayout), uintptr(VK_SHADER_STAGE_COMPUTE_BIT), 0, uintptr(pushSize), uintptr(pushData))
 	}
 
-	syscall.SyscallN(k.hw.getProc("vkCmdDispatch"), k.cmdBuf, uintptr(workgroups), 1, 1)
-	r, _, _ = syscall.SyscallN(k.hw.getProc("vkEndCommandBuffer"), k.cmdBuf)
+	vkSyscall(k.hw.getProc("vkCmdDispatch"), k.cmdBuf, uintptr(workgroups), 1, 1)
+	r = vkSyscall(k.hw.getProc("vkEndCommandBuffer"), k.cmdBuf)
 	if r != 0 {
 		return fmt.Errorf("vkEndCommandBuffer failed: %d", r)
 	}
@@ -293,13 +310,13 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 		CommandBufferCount: 1,
 		PCommandBuffers:    &k.cmdBuf,
 	}
-	r, _, _ = syscall.SyscallN(k.hw.getProc("vkQueueSubmit"), k.hw.queue, 1, uintptr(unsafe.Pointer(&submitInfo)), uintptr(k.fence))
+	r = vkSyscall(k.hw.getProc("vkQueueSubmit"), k.hw.queue, 1, uintptr(unsafe.Pointer(&submitInfo)), uintptr(k.fence))
 	if r != 0 {
 		return fmt.Errorf("vkQueueSubmit failed: %d", r)
 	}
 
 	// Wait for GPU fence (2-second timeout)
-	r, _, _ = syscall.SyscallN(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(2000000000))
+	r = vkSyscall(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(2000000000))
 	if r != 0 {
 		return fmt.Errorf("GPU compute execution failed or timed out: %d", r)
 	}
@@ -309,31 +326,31 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 // Close releases all Vulkan resources associated with this kernel.
 func (k *ComputeKernel) Close() {
 	if k.fence != 0 {
-		syscall.SyscallN(k.hw.getProc("vkDestroyFence"), k.hw.device, uintptr(k.fence), 0)
+		vkSyscall(k.hw.getProc("vkDestroyFence"), k.hw.device, uintptr(k.fence), 0)
 		k.fence = 0
 	}
 	if k.cmdPool != 0 {
-		syscall.SyscallN(k.hw.getProc("vkDestroyCommandPool"), k.hw.device, uintptr(k.cmdPool), 0)
+		vkSyscall(k.hw.getProc("vkDestroyCommandPool"), k.hw.device, uintptr(k.cmdPool), 0)
 		k.cmdPool = 0
 	}
 	if k.descPool != 0 {
-		syscall.SyscallN(k.hw.getProc("vkDestroyDescriptorPool"), k.hw.device, uintptr(k.descPool), 0)
+		vkSyscall(k.hw.getProc("vkDestroyDescriptorPool"), k.hw.device, uintptr(k.descPool), 0)
 		k.descPool = 0
 	}
 	if k.pipeline != 0 {
-		syscall.SyscallN(k.hw.getProc("vkDestroyPipeline"), k.hw.device, uintptr(k.pipeline), 0)
+		vkSyscall(k.hw.getProc("vkDestroyPipeline"), k.hw.device, uintptr(k.pipeline), 0)
 		k.pipeline = 0
 	}
 	if k.pipeLayout != 0 {
-		syscall.SyscallN(k.hw.getProc("vkDestroyPipelineLayout"), k.hw.device, uintptr(k.pipeLayout), 0)
+		vkSyscall(k.hw.getProc("vkDestroyPipelineLayout"), k.hw.device, uintptr(k.pipeLayout), 0)
 		k.pipeLayout = 0
 	}
 	if k.descLayout != 0 {
-		syscall.SyscallN(k.hw.getProc("vkDestroyDescriptorSetLayout"), k.hw.device, uintptr(k.descLayout), 0)
+		vkSyscall(k.hw.getProc("vkDestroyDescriptorSetLayout"), k.hw.device, uintptr(k.descLayout), 0)
 		k.descLayout = 0
 	}
 	if k.shaderModule != 0 {
-		syscall.SyscallN(k.hw.getProc("vkDestroyShaderModule"), k.hw.device, uintptr(k.shaderModule), 0)
+		vkSyscall(k.hw.getProc("vkDestroyShaderModule"), k.hw.device, uintptr(k.shaderModule), 0)
 		k.shaderModule = 0
 	}
 }

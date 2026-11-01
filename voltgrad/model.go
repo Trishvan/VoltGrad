@@ -63,6 +63,17 @@ type ModelArchitecture interface {
 	Backward(ctx *ComputeContext, dLoss []int32) error
 }
 
+// BatchedModelArchitecture extends ModelArchitecture with batched GEMM execution to maximize GPU occupancy.
+type BatchedModelArchitecture interface {
+	ModelArchitecture
+
+	// ForwardBatched executes forward evaluation across the entire batch in matrix form [batchSize, inDim].
+	ForwardBatched(ctx *ComputeContext, inputs []int32, batchSize int) ([]int32, error)
+
+	// BackwardBatched executes backpropagation across the entire batch with accumulated parameter gradients.
+	BackwardBatched(ctx *ComputeContext, dLoss []int32, batchSize int) error
+}
+
 // ComputeContext provides access to GPU dispatch and acceleration helpers during Forward and Backward.
 type ComputeContext struct {
 	pipeline *Pipeline
