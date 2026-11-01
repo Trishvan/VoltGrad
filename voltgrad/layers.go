@@ -49,6 +49,14 @@ func (l *LinearLayer) Forward(x []int32, shift uint) ([]int32, error) {
 // ForwardCtx computes output using physical GPU acceleration when available, with automatic CPU fallback.
 func (l *LinearLayer) ForwardCtx(ctx *ComputeContext, x []int32, shift uint) ([]int32, error) {
 	if ctx != nil && ctx.IsGPU() {
+		if l.GpuWeight != nil && l.GpuWeight.IsAllocated() {
+			var biasBuf *GpuBuffer
+			if l.UseBias && l.GpuBias != nil {
+				biasBuf = l.GpuBias.BufferInt64()
+			}
+			return ctx.GpuEngine().MatMulForwardResident(
+				l.GpuWeight.BufferPacked(), biasBuf, x, l.OutDim, l.InDim, l.Weight.BitWidth(), shift)
+		}
 		return ctx.GpuEngine().MatMulForward(l.Weight, x, l.Bias, shift)
 	}
 	return l.Forward(x, shift)
@@ -71,6 +79,14 @@ func (l *LinearLayer) ForwardBatched(x []int32, batchSize int, shift uint) ([]in
 // ForwardBatchedCtx computes batched output using GPU acceleration when available, with automatic CPU fallback.
 func (l *LinearLayer) ForwardBatchedCtx(ctx *ComputeContext, x []int32, batchSize int, shift uint) ([]int32, error) {
 	if ctx != nil && ctx.IsGPU() {
+		if l.GpuWeight != nil && l.GpuWeight.IsAllocated() {
+			var biasBuf *GpuBuffer
+			if l.UseBias && l.GpuBias != nil {
+				biasBuf = l.GpuBias.BufferInt64()
+			}
+			return ctx.GpuEngine().MatMulBatchedForwardResident(
+				l.GpuWeight.BufferPacked(), biasBuf, x, batchSize, l.OutDim, l.InDim, l.Weight.BitWidth(), shift)
+		}
 		var bias *DynamicBitTensor
 		if l.UseBias {
 			bias = l.Bias
@@ -93,6 +109,15 @@ func (l *LinearLayer) Backward(dOut []int32, x []int32, shift uint) ([]int32, er
 // BackwardCtx calculates gradients using physical GPU acceleration when available, with automatic CPU fallback.
 func (l *LinearLayer) BackwardCtx(ctx *ComputeContext, dOut []int32, x []int32, shift uint) ([]int32, error) {
 	if ctx != nil && ctx.IsGPU() {
+		if l.GpuWeight != nil && l.GpuWeight.IsAllocated() {
+			var gradBiasBuf *GpuBuffer
+			if l.UseBias && l.GpuBias != nil {
+				gradBiasBuf = l.GpuBias.BufferGrad()
+			}
+			return ctx.GpuEngine().MatMulBackwardResident(
+				dOut, x, l.OutDim, l.InDim, l.Weight.BitWidth(), shift,
+				l.GpuWeight.BufferPacked(), l.GpuWeight.BufferGrad(), gradBiasBuf)
+		}
 		return ctx.GpuEngine().MatMulBackward(dOut, x, l.Weight, l.GradW, l.GradBias, shift)
 	}
 	return l.Backward(dOut, x, shift)
@@ -116,6 +141,15 @@ func (l *LinearLayer) BackwardBatched(dOut []int32, x []int32, batchSize int, sh
 // BackwardBatchedCtx calculates gradients using physical GPU batched acceleration when available.
 func (l *LinearLayer) BackwardBatchedCtx(ctx *ComputeContext, dOut []int32, x []int32, batchSize int, shift uint) ([]int32, error) {
 	if ctx != nil && ctx.IsGPU() {
+		if l.GpuWeight != nil && l.GpuWeight.IsAllocated() {
+			var gradBiasBuf *GpuBuffer
+			if l.UseBias && l.GpuBias != nil {
+				gradBiasBuf = l.GpuBias.BufferGrad()
+			}
+			return ctx.GpuEngine().MatMulBatchedBackwardResident(
+				dOut, x, batchSize, l.OutDim, l.InDim, l.Weight.BitWidth(), shift,
+				l.GpuWeight.BufferPacked(), l.GpuWeight.BufferGrad(), gradBiasBuf)
+		}
 		var gradBias *DynamicBitTensor
 		if l.UseBias {
 			gradBias = l.GradBias
@@ -130,9 +164,15 @@ func (l *LinearLayer) ZeroGrad() {
 	for i := 0; i < l.GradW.Len(); i++ {
 		l.GradW.Set(i, 0)
 	}
+	if l.GpuWeight != nil {
+		l.GpuWeight.ClearGrad()
+	}
 	if l.UseBias {
 		for i := 0; i < l.GradBias.Len(); i++ {
 			l.GradBias.Set(i, 0)
+		}
+		if l.GpuBias != nil {
+			l.GpuBias.ClearGrad()
 		}
 	}
 }
@@ -158,15 +198,18 @@ func (l *LinearLayer) BindGPU(hw *HardwareContext) error {
 		return err
 	}
 	l.GpuWeight = pw
+	l.Weight.SetPersistentGPU(pw)
 
 	if l.UseBias && l.Bias != nil {
 		pb, err := NewPersistentGpuTensor(hw, l.Bias)
 		if err != nil {
 			pw.Free()
 			l.GpuWeight = nil
+			l.Weight.SetPersistentGPU(nil)
 			return err
 		}
 		l.GpuBias = pb
+		l.Bias.SetPersistentGPU(pb)
 	}
 	return nil
 }
@@ -191,9 +234,13 @@ func (l *LinearLayer) FreeGPU() {
 	if l.GpuWeight != nil {
 		l.GpuWeight.Free()
 		l.GpuWeight = nil
+		l.Weight.SetPersistentGPU(nil)
 	}
 	if l.GpuBias != nil {
 		l.GpuBias.Free()
 		l.GpuBias = nil
+		if l.Bias != nil {
+			l.Bias.SetPersistentGPU(nil)
+		}
 	}
 }

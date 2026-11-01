@@ -167,7 +167,33 @@ The engine layer has its own unit tests pinning GPU parity against CPU on the pa
     gpu_features_test.go:166: Weights: CPU = [329 -656 1311 -2622], GPU = [329 -656 1311 -2622]
     gpu_features_test.go:178: >>> GPU Optimizer with Dynamic Bit Widening (DBW) VERIFIED 100% BIT-FOR-BIT! <<<
 --- PASS: TestGPUOptimizerWithDBW (0.09s)
+=== RUN   TestTrainingPipelinePersistentWeightsParity
+    pipeline_test.go:358: >>> Persistent GPU Training Pipeline & CPU Reference: 100% BIT-FOR-BIT IDENTICAL! <<<
+--- PASS: TestTrainingPipelinePersistentWeightsParity (0.14s)
 PASS
+```
+
+---
+
+## 📊 Reproducible Benchmarks (Physical GPU vs. CPU)
+
+Benchmarked on physical hardware (**Intel(R) Iris(R) Xe Graphics**, Vulkan 1.4.323, Driver 0.405.2989, 8074 MB VRAM, Intel Core i5-1135G7 @ 2.40GHz):
+
+| Benchmark Operation | Mode | Iterations | Time / Op | Memory / Op | Allocs / Op | Allocation Delta |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **MatMul Forward** ($64 \times 64$) | Pooled Transient GPU | 4,347 | 278.5 µs | 4,744 B | 6 allocs | Baseline |
+| **MatMul Forward** ($64 \times 64$) | **Persistent GPU Resident** | **4,684** | **258.1 µs** | **632 B** | **4 allocs** | **-86.7% memory** |
+| **Batched GEMM** ($B=32, 64 \times 64$) | Pooled Transient GPU | 3,744 | 290.5 µs | 12,680 B | 6 allocs | Baseline |
+| **Batched GEMM** ($B=32, 64 \times 64$) | **Persistent GPU Resident** | **3,861** | **318.8 µs** | **8,568 B** | **4 allocs** | **-32.4% memory** |
+| **DBW Optimizer Step** ($N=1024$) | Pooled Transient GPU | 3,229 | 376.5 µs | 41,340 B | 9 allocs | Baseline |
+| **DBW Optimizer Step** ($N=1024$) | **Persistent GPU Resident** | **2,724** | **430.1 µs** | **580 B** | **7 allocs** | **-98.6% memory** |
+| **Training Step** (Batch 32) | CPU Reference | 3,975 | 337.6 µs | 10,122 B | 268 allocs | Baseline |
+| **Training Step** (Batch 32) | **Persistent GPU Pipeline** | **397** | **2.67 ms** | **11,061 B** | **68 allocs** | **-74.6% allocs** |
+| **Persistent Sync** (Host $\leftrightarrow$ GPU) | Bidirectional Sync | 14,814 | 78.3 µs | 20,480 B | 6 allocs | Zero copy |
+
+### How to Reproduce Locally:
+```powershell
+go test -bench="Benchmark" -run="TestNone" github.com/Trishvan/VoltGrad/voltgrad -benchmem
 ```
 
 ---

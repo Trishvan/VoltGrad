@@ -821,6 +821,370 @@ func (e *GpuEngine) OptimizerStep(p *DynamicBitTensor, g *DynamicBitTensor, v *D
 	return targetBitWidth, nil
 }
 
+// MatMulForwardResident executes matrix multiplication using a persistent GPU weight buffer.
+func (e *GpuEngine) MatMulForwardResident(bufW, bufBias *GpuBuffer, x []int32, outDim, inDim, bitWidth int, shift uint) ([]int32, error) {
+	if bufW == nil {
+		return nil, fmt.Errorf("persistent weight buffer is nil")
+	}
+	if outDim <= 0 || inDim <= 0 {
+		return nil, fmt.Errorf("invalid dimensions: %dx%d", outDim, inDim)
+	}
+	if len(x) != inDim {
+		return nil, fmt.Errorf("input vector len %d != inDim %d", len(x), inDim)
+	}
+
+	bufX, err := e.hw.GetPooledBuffer(uint64(len(x) * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufX.Release()
+	if err := bufX.WriteInt32(x); err != nil {
+		return nil, err
+	}
+
+	useBias := uint32(0)
+	var bBias *GpuBuffer
+	if bufBias != nil {
+		useBias = 1
+		bBias = bufBias
+	} else {
+		bBias, err = e.hw.GetPooledBuffer(8)
+		if err != nil {
+			return nil, err
+		}
+		defer bBias.Release()
+	}
+
+	bufY, err := e.hw.GetPooledBuffer(uint64(outDim * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufY.Release()
+
+	push := [5]uint32{
+		uint32(inDim),
+		uint32(outDim),
+		uint32(bitWidth),
+		uint32(shift),
+		useBias,
+	}
+
+	workgroups := uint32((outDim + 63) / 64)
+	buffers := []*GpuBuffer{bufX, bufW, bBias, bufY}
+	if err := e.kernelMatMulFwd.Dispatch(buffers, unsafe.Pointer(&push[0]), 20, workgroups); err != nil {
+		return nil, fmt.Errorf("GPU MatMulForwardResident dispatch failed: %w", err)
+	}
+
+	return bufY.ReadInt32(outDim)
+}
+
+// MatMulBatchedForwardResident executes batched GEMM using a persistent GPU weight buffer.
+func (e *GpuEngine) MatMulBatchedForwardResident(bufW, bufBias *GpuBuffer, x []int32, batchSize, outDim, inDim, bitWidth int, shift uint) ([]int32, error) {
+	if bufW == nil {
+		return nil, fmt.Errorf("persistent weight buffer is nil")
+	}
+	if batchSize <= 0 || outDim <= 0 || inDim <= 0 {
+		return nil, fmt.Errorf("invalid batched dimensions: batch=%d, outDim=%d, inDim=%d", batchSize, outDim, inDim)
+	}
+	if len(x) != batchSize*inDim {
+		return nil, fmt.Errorf("input batch length %d != batchSize*inDim (%d)", len(x), batchSize*inDim)
+	}
+
+	bufX, err := e.hw.GetPooledBuffer(uint64(len(x) * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufX.Release()
+	if err := bufX.WriteInt32(x); err != nil {
+		return nil, err
+	}
+
+	useBias := uint32(0)
+	var bBias *GpuBuffer
+	if bufBias != nil {
+		useBias = 1
+		bBias = bufBias
+	} else {
+		bBias, err = e.hw.GetPooledBuffer(8)
+		if err != nil {
+			return nil, err
+		}
+		defer bBias.Release()
+	}
+
+	totalOut := batchSize * outDim
+	bufY, err := e.hw.GetPooledBuffer(uint64(totalOut * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufY.Release()
+
+	push := [6]uint32{
+		uint32(inDim),
+		uint32(outDim),
+		uint32(batchSize),
+		uint32(bitWidth),
+		uint32(shift),
+		useBias,
+	}
+
+	workgroups := uint32((totalOut + 63) / 64)
+	buffers := []*GpuBuffer{bufX, bufW, bBias, bufY}
+	if err := e.kernelMatMulBatchedFwd.Dispatch(buffers, unsafe.Pointer(&push[0]), 24, workgroups); err != nil {
+		return nil, fmt.Errorf("GPU MatMulBatchedForwardResident dispatch failed: %w", err)
+	}
+
+	return bufY.ReadInt32(totalOut)
+}
+
+// MatMulBackwardResident executes backpropagation using persistent GPU weight and gradient buffers.
+func (e *GpuEngine) MatMulBackwardResident(dOut, x []int32, outDim, inDim, bitWidth int, shift uint, bufW, bufGradW, bufGradBias *GpuBuffer) ([]int32, error) {
+	if bufW == nil || bufGradW == nil {
+		return nil, fmt.Errorf("persistent weight and gradient buffers cannot be nil")
+	}
+	if len(dOut) != outDim {
+		return nil, fmt.Errorf("dOut length %d != outDim %d", len(dOut), outDim)
+	}
+	if len(x) != inDim {
+		return nil, fmt.Errorf("x length %d != inDim %d", len(x), inDim)
+	}
+
+	// 1. Compute dX = (dOut * W) >> shift
+	bufDOut, err := e.hw.GetPooledBuffer(uint64(len(dOut) * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufDOut.Release()
+	if err := bufDOut.WriteInt32(dOut); err != nil {
+		return nil, err
+	}
+
+	bufDX, err := e.hw.GetPooledBuffer(uint64(inDim * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufDX.Release()
+
+	pushDX := [4]uint32{
+		uint32(inDim),
+		uint32(outDim),
+		uint32(bitWidth),
+		uint32(shift),
+	}
+
+	wgDX := uint32((inDim + 63) / 64)
+	buffersDX := []*GpuBuffer{bufDOut, bufW, bufDX}
+	if err := e.kernelMatMulBwdDx.Dispatch(buffersDX, unsafe.Pointer(&pushDX[0]), 16, wgDX); err != nil {
+		return nil, fmt.Errorf("GPU MatMulBackwardResident dX dispatch failed: %w", err)
+	}
+
+	// 2. Accumulate parameter gradients into persistent GPU buffers
+	bufX, err := e.hw.GetPooledBuffer(uint64(len(x) * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufX.Release()
+	if err := bufX.WriteInt32(x); err != nil {
+		return nil, err
+	}
+
+	useBias := uint32(0)
+	var bGradBias *GpuBuffer
+	if bufGradBias != nil {
+		useBias = 1
+		bGradBias = bufGradBias
+	} else {
+		bGradBias, err = e.hw.GetPooledBuffer(8)
+		if err != nil {
+			return nil, err
+		}
+		defer bGradBias.Release()
+	}
+
+	pushDW := [4]uint32{
+		uint32(inDim),
+		uint32(outDim),
+		uint32(shift),
+		useBias,
+	}
+
+	totalDW := outDim * inDim
+	wgDW := uint32((totalDW + 63) / 64)
+	buffersDW := []*GpuBuffer{bufDOut, bufX, bufGradW, bGradBias}
+	if err := e.kernelMatMulBwdDw.Dispatch(buffersDW, unsafe.Pointer(&pushDW[0]), 16, wgDW); err != nil {
+		return nil, fmt.Errorf("GPU MatMulBackwardResident dW dispatch failed: %w", err)
+	}
+
+	return bufDX.ReadInt32(inDim)
+}
+
+// MatMulBatchedBackwardResident executes batched backpropagation using persistent GPU weight and gradient buffers.
+func (e *GpuEngine) MatMulBatchedBackwardResident(dOut, x []int32, batchSize, outDim, inDim, bitWidth int, shift uint, bufW, bufGradW, bufGradBias *GpuBuffer) ([]int32, error) {
+	if bufW == nil || bufGradW == nil {
+		return nil, fmt.Errorf("persistent weight and gradient buffers cannot be nil")
+	}
+	if batchSize <= 0 || outDim <= 0 || inDim <= 0 {
+		return nil, fmt.Errorf("invalid batched backward dimensions")
+	}
+	if len(dOut) != batchSize*outDim {
+		return nil, fmt.Errorf("dOut length %d != batchSize*outDim (%d)", len(dOut), batchSize*outDim)
+	}
+	if len(x) != batchSize*inDim {
+		return nil, fmt.Errorf("x length %d != batchSize*inDim (%d)", len(x), batchSize*inDim)
+	}
+
+	// 1. Batched dX: dX[B, InDim] = (dOut[B, OutDim] * W[OutDim, InDim]) >> shift
+	bufDOut, err := e.hw.GetPooledBuffer(uint64(len(dOut) * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufDOut.Release()
+	if err := bufDOut.WriteInt32(dOut); err != nil {
+		return nil, err
+	}
+
+	totalDX := batchSize * inDim
+	bufDX, err := e.hw.GetPooledBuffer(uint64(totalDX * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufDX.Release()
+
+	pushDX := [5]uint32{
+		uint32(inDim),
+		uint32(outDim),
+		uint32(batchSize),
+		uint32(bitWidth),
+		uint32(shift),
+	}
+
+	wgDX := uint32((totalDX + 63) / 64)
+	buffersDX := []*GpuBuffer{bufDOut, bufW, bufDX}
+	if err := e.kernelMatMulBatchedBwdDx.Dispatch(buffersDX, unsafe.Pointer(&pushDX[0]), 20, wgDX); err != nil {
+		return nil, fmt.Errorf("GPU MatMulBatchedBackwardResident dX dispatch failed: %w", err)
+	}
+
+	// 2. Batched dW: accumulate dOut^T * X into resident bufGradW and bufGradBias
+	bufX, err := e.hw.GetPooledBuffer(uint64(len(x) * 4))
+	if err != nil {
+		return nil, err
+	}
+	defer bufX.Release()
+	if err := bufX.WriteInt32(x); err != nil {
+		return nil, err
+	}
+
+	useBias := uint32(0)
+	var bGradBias *GpuBuffer
+	if bufGradBias != nil {
+		useBias = 1
+		bGradBias = bufGradBias
+	} else {
+		bGradBias, err = e.hw.GetPooledBuffer(8)
+		if err != nil {
+			return nil, err
+		}
+		defer bGradBias.Release()
+	}
+
+	pushDW := [5]uint32{
+		uint32(inDim),
+		uint32(outDim),
+		uint32(batchSize),
+		uint32(shift),
+		useBias,
+	}
+
+	totalDW := outDim * inDim
+	wgDW := uint32((totalDW + 63) / 64)
+	buffersDW := []*GpuBuffer{bufDOut, bufX, bufGradW, bGradBias}
+	if err := e.kernelMatMulBatchedBwdDw.Dispatch(buffersDW, unsafe.Pointer(&pushDW[0]), 20, wgDW); err != nil {
+		return nil, fmt.Errorf("GPU MatMulBatchedBackwardResident dW dispatch failed: %w", err)
+	}
+
+	return bufDX.ReadInt32(totalDX)
+}
+
+// OptimizerStepResident updates parameters directly in persistent GPU buffers with zero host copies during the step.
+func (e *GpuEngine) OptimizerStepResident(bufWeights, bufGrads, bufVels, bufPacked *GpuBuffer, count int, currentBitWidth int, config OptimizerConfig) (int, error) {
+	if count <= 0 {
+		return currentBitWidth, nil
+	}
+	if bufWeights == nil || bufGrads == nil || bufVels == nil || bufPacked == nil {
+		return currentBitWidth, fmt.Errorf("resident optimizer buffers cannot be nil")
+	}
+
+	bufMeta, err := e.hw.GetPooledBuffer(4)
+	if err != nil {
+		return currentBitWidth, err
+	}
+	defer bufMeta.Release()
+	bufMeta.Clear()
+
+	optType := uint32(0)
+	switch config.Type {
+	case OptimizerSGD:
+		optType = 0
+	case OptimizerSGDMomentum:
+		optType = 1
+	case OptimizerAdamQ:
+		optType = 2
+	}
+
+	pushOpt := [6]int32{
+		int32(count),
+		config.LearningRateQ16,
+		config.MomentumBeta,
+		int32(config.FractionalBits),
+		int32(optType),
+		config.WeightDecayQ16,
+	}
+
+	wg := uint32((count + 63) / 64)
+	buffersOpt := []*GpuBuffer{bufWeights, bufGrads, bufVels, bufMeta}
+	if err := e.kernelOptimizer.Dispatch(buffersOpt, unsafe.Pointer(&pushOpt[0]), 24, wg); err != nil {
+		return currentBitWidth, fmt.Errorf("GPU resident OptimizerStep dispatch failed: %w", err)
+	}
+
+	// Check if DBW auto-widening occurred on the GPU
+	metaSlice, err := bufMeta.ReadUint32(1)
+	if err != nil {
+		return currentBitWidth, err
+	}
+	targetBitWidth := int(metaSlice[0])
+	if targetBitWidth < currentBitWidth {
+		targetBitWidth = currentBitWidth
+	}
+	if targetBitWidth < 2 {
+		targetBitWidth = 2
+	}
+	if targetBitWidth > 64 {
+		targetBitWidth = 64
+	}
+
+	// Perform DBW GPU Repacking directly on the GPU into bufPacked
+	totalBits := count * targetBitWidth
+	numWords := (totalBits + 31) / 32
+	if numWords == 0 {
+		numWords = 1
+	}
+	if err := bufPacked.SetActiveSize(uint64(numWords * 4)); err != nil {
+		return currentBitWidth, err
+	}
+	bufPacked.Clear()
+
+	pushRepack := [2]uint32{
+		uint32(count),
+		uint32(targetBitWidth),
+	}
+	buffersRepack := []*GpuBuffer{bufWeights, bufPacked}
+	if err := e.kernelRepack.Dispatch(buffersRepack, unsafe.Pointer(&pushRepack[0]), 8, wg); err != nil {
+		return currentBitWidth, fmt.Errorf("GPU resident Repack dispatch failed: %w", err)
+	}
+
+	return targetBitWidth, nil
+}
+
 // Close terminates all compute kernels.
 func (e *GpuEngine) Close() {
 	if e.kernelMatMulFwd != nil {

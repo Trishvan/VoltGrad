@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"sync"
 	"unsafe"
 )
 
@@ -22,6 +24,7 @@ type DeviceReport struct {
 	APIVersion       string
 	DriverVersion    string
 	HasShaderInt64   bool
+	TimestampPeriod  float32
 	MemoryHeaps      []MemoryHeapReport
 	TotalDeviceLocal uint64
 	TotalHostVisible uint64
@@ -41,6 +44,7 @@ func (r DeviceReport) String() string {
 	sb.WriteString(fmt.Sprintf("Vendor: %s [0x%04X] | DeviceID: 0x%04X\n", r.VendorName, r.VendorID, r.DeviceID))
 	sb.WriteString(fmt.Sprintf("Vulkan API: %s | Driver Version: %s\n", r.APIVersion, r.DriverVersion))
 	sb.WriteString(fmt.Sprintf("Hardware 64-bit Shader Integers (shaderInt64): %v\n", r.HasShaderInt64))
+	sb.WriteString(fmt.Sprintf("Timestamp Period: %.2f ns/tick\n", r.TimestampPeriod))
 	sb.WriteString(fmt.Sprintf("Memory Heaps (%d total):\n", len(r.MemoryHeaps)))
 	for _, h := range r.MemoryHeaps {
 		kind := "Host Visible / Shared"
@@ -92,15 +96,16 @@ func vendorName(id uint32) string {
 type HardwareContext struct {
 	loader *platformLoader
 
-	instance       uintptr
-	physDev        uintptr
-	device         uintptr
-	queue          uintptr
-	queueFam       uint32
-	memProps       VkPhysicalDeviceMemoryProperties
-	deviceReport   DeviceReport
-	hasShaderInt64 bool
-	pool           *BufferPool
+	instance        uintptr
+	physDev         uintptr
+	device          uintptr
+	queue           uintptr
+	queueFam        uint32
+	memProps        VkPhysicalDeviceMemoryProperties
+	deviceReport    DeviceReport
+	hasShaderInt64  bool
+	timestampPeriod float32
+	pool            *BufferPool
 }
 
 // NewHardwareContext discovers and initializes the system's Vulkan compute device using a cross-platform loader.
@@ -277,15 +282,26 @@ func (c *HardwareContext) initDevice() error {
 		}
 		devName := string(nameBytes[:n])
 
+		period := float32(1.0)
+		if len(bestPropsBuf) >= 724 {
+			u := binary.LittleEndian.Uint32(bestPropsBuf[720:724])
+			rawF := math.Float32frombits(u)
+			if rawF > 0 && !math.IsNaN(float64(rawF)) && !math.IsInf(float64(rawF), 0) {
+				period = rawF
+			}
+		}
+		c.timestampPeriod = period
+
 		c.deviceReport = DeviceReport{
-			DeviceName:     devName,
-			DeviceType:     deviceTypeName(devType),
-			VendorID:       vendID,
-			VendorName:     vendorName(vendID),
-			DeviceID:       devID,
-			APIVersion:     fmt.Sprintf("%d.%d.%d", apiVer>>22, (apiVer>>12)&0x3ff, apiVer&0xfff),
-			DriverVersion:  fmt.Sprintf("%d.%d.%d", drvVer>>22, (drvVer>>12)&0x3ff, drvVer&0xfff),
-			HasShaderInt64: true,
+			DeviceName:      devName,
+			DeviceType:      deviceTypeName(devType),
+			VendorID:        vendID,
+			VendorName:      vendorName(vendID),
+			DeviceID:        devID,
+			APIVersion:      fmt.Sprintf("%d.%d.%d", apiVer>>22, (apiVer>>12)&0x3ff, apiVer&0xfff),
+			DriverVersion:   fmt.Sprintf("%d.%d.%d", drvVer>>22, (drvVer>>12)&0x3ff, drvVer&0xfff),
+			HasShaderInt64:  true,
+			TimestampPeriod: period,
 		}
 
 		for i := uint32(0); i < c.memProps.MemoryHeapCount; i++ {
@@ -310,6 +326,14 @@ func (c *HardwareContext) initDevice() error {
 // DeviceReport returns structured information and telemetry about the active Vulkan GPU.
 func (c *HardwareContext) DeviceReport() DeviceReport {
 	return c.deviceReport
+}
+
+// TimestampPeriod returns the hardware query timestamp period in nanoseconds per tick.
+func (c *HardwareContext) TimestampPeriod() float32 {
+	if c.timestampPeriod <= 0 {
+		return 1.0
+	}
+	return c.timestampPeriod
 }
 
 // HasShaderInt64 returns true if 64-bit integer compute shader operations are enabled and validated on the hardware.
@@ -374,10 +398,50 @@ type GpuBuffer struct {
 	ctx      *HardwareContext
 	buffer   uint64
 	memory   uint64
-	size     uint64
-	capacity uint64
+	size     uint64 // currently active logical size requested by the caller
+	capacity uint64 // total allocated physical capacity in bytes
 	mapped   unsafe.Pointer
 	pool     *BufferPool
+	inUse    bool
+	isFreed  bool
+	mu       sync.Mutex
+}
+
+// InUse reports whether the buffer is currently checked out of the pool or active.
+func (b *GpuBuffer) InUse() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.inUse
+}
+
+// IsFreed reports whether the buffer memory has been destroyed.
+func (b *GpuBuffer) IsFreed() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.isFreed
+}
+
+// SetActiveSize updates the active logical size of the buffer within its capacity.
+func (b *GpuBuffer) SetActiveSize(size uint64) error {
+	if b == nil {
+		return errors.New("cannot set active size on nil buffer")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.isFreed || b.mapped == nil {
+		return errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	if size > b.capacity {
+		return fmt.Errorf("active size %d exceeds buffer capacity %d", size, b.capacity)
+	}
+	b.size = size
+	return nil
 }
 
 // CreateHostCoherentBuffer allocates a host-visible, host-coherent buffer (Zero Copy).
@@ -437,6 +501,8 @@ func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, err
 		size:     size,
 		capacity: size,
 		mapped:   mapped,
+		inUse:    true,
+		isFreed:  false,
 	}, nil
 }
 
@@ -445,12 +511,17 @@ func (b *GpuBuffer) WriteInt32(data []int32) error {
 	if len(data) == 0 {
 		return nil
 	}
-	if b.mapped == nil {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.isFreed || b.mapped == nil {
 		return errors.New("gpu buffer memory is not mapped or has been freed")
 	}
-	reqBytes := len(data) * 4
-	if uint64(reqBytes) > b.capacity {
+	reqBytes := uint64(len(data) * 4)
+	if reqBytes > b.capacity {
 		return fmt.Errorf("buffer overflow: writing %d int32 elements (%d bytes) exceeds buffer capacity of %d bytes", len(data), reqBytes, b.capacity)
+	}
+	if reqBytes > b.size {
+		b.size = reqBytes
 	}
 	dst := unsafe.Slice((*int32)(b.mapped), len(data))
 	copy(dst, data)
@@ -462,12 +533,17 @@ func (b *GpuBuffer) WriteUint32(data []uint32) error {
 	if len(data) == 0 {
 		return nil
 	}
-	if b.mapped == nil {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.isFreed || b.mapped == nil {
 		return errors.New("gpu buffer memory is not mapped or has been freed")
 	}
-	reqBytes := len(data) * 4
-	if uint64(reqBytes) > b.capacity {
+	reqBytes := uint64(len(data) * 4)
+	if reqBytes > b.capacity {
 		return fmt.Errorf("buffer overflow: writing %d uint32 elements (%d bytes) exceeds buffer capacity of %d bytes", len(data), reqBytes, b.capacity)
+	}
+	if reqBytes > b.size {
+		b.size = reqBytes
 	}
 	dst := unsafe.Slice((*uint32)(b.mapped), len(data))
 	copy(dst, data)
@@ -479,12 +555,17 @@ func (b *GpuBuffer) WriteInt64(data []int64) error {
 	if len(data) == 0 {
 		return nil
 	}
-	if b.mapped == nil {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.isFreed || b.mapped == nil {
 		return errors.New("gpu buffer memory is not mapped or has been freed")
 	}
-	reqBytes := len(data) * 8
-	if uint64(reqBytes) > b.capacity {
+	reqBytes := uint64(len(data) * 8)
+	if reqBytes > b.capacity {
 		return fmt.Errorf("buffer overflow: writing %d int64 elements (%d bytes) exceeds buffer capacity of %d bytes", len(data), reqBytes, b.capacity)
+	}
+	if reqBytes > b.size {
+		b.size = reqBytes
 	}
 	dst := unsafe.Slice((*int64)(b.mapped), len(data))
 	copy(dst, data)
@@ -499,12 +580,17 @@ func (b *GpuBuffer) ReadInt32(count int) ([]int32, error) {
 	if count == 0 {
 		return nil, nil
 	}
-	if b.mapped == nil {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.isFreed || b.mapped == nil {
 		return nil, errors.New("gpu buffer memory is not mapped or has been freed")
 	}
-	reqBytes := count * 4
-	if uint64(reqBytes) > b.capacity {
+	reqBytes := uint64(count * 4)
+	if reqBytes > b.capacity {
 		return nil, fmt.Errorf("buffer read bounds error: reading %d int32 elements (%d bytes) exceeds buffer capacity of %d bytes", count, reqBytes, b.capacity)
+	}
+	if reqBytes > b.size {
+		return nil, fmt.Errorf("buffer read bounds error: reading %d int32 elements (%d bytes) exceeds active buffer size of %d bytes", count, reqBytes, b.size)
 	}
 	src := unsafe.Slice((*int32)(b.mapped), count)
 	out := make([]int32, count)
@@ -520,12 +606,17 @@ func (b *GpuBuffer) ReadUint32(count int) ([]uint32, error) {
 	if count == 0 {
 		return nil, nil
 	}
-	if b.mapped == nil {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.isFreed || b.mapped == nil {
 		return nil, errors.New("gpu buffer memory is not mapped or has been freed")
 	}
-	reqBytes := count * 4
-	if uint64(reqBytes) > b.capacity {
+	reqBytes := uint64(count * 4)
+	if reqBytes > b.capacity {
 		return nil, fmt.Errorf("buffer read bounds error: reading %d uint32 elements (%d bytes) exceeds buffer capacity of %d bytes", count, reqBytes, b.capacity)
+	}
+	if reqBytes > b.size {
+		return nil, fmt.Errorf("buffer read bounds error: reading %d uint32 elements (%d bytes) exceeds active buffer size of %d bytes", count, reqBytes, b.size)
 	}
 	src := unsafe.Slice((*uint32)(b.mapped), count)
 	out := make([]uint32, count)
@@ -541,12 +632,17 @@ func (b *GpuBuffer) ReadInt64(count int) ([]int64, error) {
 	if count == 0 {
 		return nil, nil
 	}
-	if b.mapped == nil {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.isFreed || b.mapped == nil {
 		return nil, errors.New("gpu buffer memory is not mapped or has been freed")
 	}
-	reqBytes := count * 8
-	if uint64(reqBytes) > b.capacity {
+	reqBytes := uint64(count * 8)
+	if reqBytes > b.capacity {
 		return nil, fmt.Errorf("buffer read bounds error: reading %d int64 elements (%d bytes) exceeds buffer capacity of %d bytes", count, reqBytes, b.capacity)
+	}
+	if reqBytes > b.size {
+		return nil, fmt.Errorf("buffer read bounds error: reading %d int64 elements (%d bytes) exceeds active buffer size of %d bytes", count, reqBytes, b.size)
 	}
 	src := unsafe.Slice((*int64)(b.mapped), count)
 	out := make([]int64, count)
@@ -554,8 +650,10 @@ func (b *GpuBuffer) ReadInt64(count int) ([]int64, error) {
 	return out, nil
 }
 
-// Clear zeroes out the entire buffer capacity.
+// Clear zeroes out the active buffer memory.
 func (b *GpuBuffer) Clear() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.mapped != nil && b.capacity > 0 {
 		dst := unsafe.Slice((*byte)(b.mapped), b.capacity)
 		for i := range dst {
@@ -564,8 +662,19 @@ func (b *GpuBuffer) Clear() {
 	}
 }
 
-// Free releases the buffer and unmaps memory.
+// Free releases the buffer and unmaps memory with double-free protection.
 func (b *GpuBuffer) Free() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.isFreed {
+		return
+	}
+	b.isFreed = true
+	b.inUse = false
+	b.size = 0
 	if b.mapped != nil {
 		vkSyscall(b.ctx.getProc("vkUnmapMemory"), b.ctx.device, uintptr(b.memory))
 		b.mapped = nil

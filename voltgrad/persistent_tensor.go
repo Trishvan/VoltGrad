@@ -6,13 +6,17 @@ import (
 )
 
 // PersistentGpuTensor maintains tensor data persistently allocated in Vulkan GPU memory across training iterations.
-// It eliminates repetitive host-to-device uploads and device-to-host readbacks on every forward/backward/optimizer step.
+// It holds both packed DBW words, 64-bit parameter representations, gradients, and velocities in host-coherent GPU memory,
+// completely eliminating repetitive host-to-device uploads and device-to-host readbacks on every training step.
 type PersistentGpuTensor struct {
-	hw      *HardwareContext
-	tensor  *DynamicBitTensor
-	gpuBuf  *GpuBuffer
-	isDirty bool
-	mu      sync.RWMutex
+	hw        *HardwareContext
+	tensor    *DynamicBitTensor
+	bufPacked *GpuBuffer
+	bufInt64  *GpuBuffer
+	bufGrad   *GpuBuffer
+	bufVel    *GpuBuffer
+	isDirty   bool
+	mu        sync.RWMutex
 }
 
 // NewPersistentGpuTensor creates a GPU-resident persistent tensor mirroring a DynamicBitTensor.
@@ -40,42 +44,84 @@ func NewPersistentGpuTensor(hw *HardwareContext, t *DynamicBitTensor) (*Persiste
 	return pt, nil
 }
 
-// Allocate provisions the persistent host-coherent storage buffer on the GPU device.
+// Allocate provisions the persistent host-coherent storage buffers on the GPU device.
 func (pt *PersistentGpuTensor) Allocate() error {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 
-	// Ensure capacity to hold either packed words (uint32) or 64-bit uncompressed elements (int64)
+	// Ensure capacity to hold up to 64-bit packed words or 64-bit uncompressed elements
 	neededBytes := uint64(pt.tensor.Len() * 8)
-	wordsBytes := uint64(len(pt.tensor.Words()) * 4)
-	if wordsBytes > neededBytes {
-		neededBytes = wordsBytes
-	}
 	if neededBytes < 64 {
 		neededBytes = 64
 	}
 
-	buf, err := pt.hw.CreateHostCoherentBuffer(neededBytes)
+	var err error
+	pt.bufPacked, err = pt.hw.CreateHostCoherentBuffer(neededBytes)
 	if err != nil {
-		return fmt.Errorf("failed to allocate persistent GPU buffer: %w", err)
+		return fmt.Errorf("failed allocating persistent packed buffer: %w", err)
 	}
-	pt.gpuBuf = buf
+
+	pt.bufInt64, err = pt.hw.CreateHostCoherentBuffer(neededBytes)
+	if err != nil {
+		pt.bufPacked.Free()
+		pt.bufPacked = nil
+		return fmt.Errorf("failed allocating persistent int64 buffer: %w", err)
+	}
+
+	pt.bufGrad, err = pt.hw.CreateHostCoherentBuffer(neededBytes)
+	if err != nil {
+		pt.bufPacked.Free()
+		pt.bufInt64.Free()
+		pt.bufPacked = nil
+		pt.bufInt64 = nil
+		return fmt.Errorf("failed allocating persistent grad buffer: %w", err)
+	}
+
+	pt.bufVel, err = pt.hw.CreateHostCoherentBuffer(neededBytes)
+	if err != nil {
+		pt.bufPacked.Free()
+		pt.bufInt64.Free()
+		pt.bufGrad.Free()
+		pt.bufPacked = nil
+		pt.bufInt64 = nil
+		pt.bufGrad = nil
+		return fmt.Errorf("failed allocating persistent vel buffer: %w", err)
+	}
+
+	// Zero-initialize buffers
+	pt.bufPacked.Clear()
+	pt.bufInt64.Clear()
+	pt.bufGrad.Clear()
+	pt.bufVel.Clear()
+
 	return nil
 }
 
-// SyncToGPU writes the CPU tensor's current data into the resident GPU buffer.
+// SyncToGPU writes the CPU tensor's current data into the resident GPU buffers.
 func (pt *PersistentGpuTensor) SyncToGPU() error {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 
-	if pt.gpuBuf == nil {
-		return fmt.Errorf("persistent GPU buffer is not allocated")
+	if pt.bufPacked == nil || pt.bufInt64 == nil {
+		return fmt.Errorf("persistent GPU buffers are not allocated")
 	}
 
 	words := pt.tensor.Words()
-	if err := pt.gpuBuf.WriteUint32(words); err != nil {
+	if err := pt.bufPacked.SetActiveSize(uint64(len(words) * 4)); err != nil {
+		return fmt.Errorf("failed to set active size on packed buffer: %w", err)
+	}
+	if err := pt.bufPacked.WriteUint32(words); err != nil {
 		return fmt.Errorf("failed to sync packed words to GPU: %w", err)
 	}
+
+	int64s := pt.tensor.ToInt64Slice()
+	if err := pt.bufInt64.SetActiveSize(uint64(len(int64s) * 8)); err != nil {
+		return fmt.Errorf("failed to set active size on int64 buffer: %w", err)
+	}
+	if err := pt.bufInt64.WriteInt64(int64s); err != nil {
+		return fmt.Errorf("failed to sync int64 elements to GPU: %w", err)
+	}
+
 	pt.isDirty = false
 	return nil
 }
@@ -85,25 +131,77 @@ func (pt *PersistentGpuTensor) SyncToHost() error {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 
-	if pt.gpuBuf == nil {
+	if pt.bufInt64 == nil {
 		return fmt.Errorf("persistent GPU buffer is not allocated")
 	}
 
-	numWords := len(pt.tensor.Words())
-	words, err := pt.gpuBuf.ReadUint32(numWords)
+	numElements := pt.tensor.Len()
+	int64s, err := pt.bufInt64.ReadInt64(numElements)
 	if err != nil {
-		return fmt.Errorf("failed to read back persistent GPU buffer: %w", err)
+		return fmt.Errorf("failed to read back persistent GPU int64 buffer: %w", err)
 	}
-	pt.tensor.SetWords(words, pt.tensor.BitWidth())
+	pt.tensor.FromInt64Slice(int64s)
+
+	if pt.bufPacked != nil {
+		numWords := len(pt.tensor.Words())
+		if words, err := pt.bufPacked.ReadUint32(numWords); err == nil {
+			pt.tensor.SetWords(words, pt.tensor.BitWidth())
+		}
+	}
+
 	pt.isDirty = false
 	return nil
 }
 
-// Buffer returns the underlying active persistent GpuBuffer.
+// Buffer returns the primary packed GPU buffer for compute kernel execution.
 func (pt *PersistentGpuTensor) Buffer() *GpuBuffer {
 	pt.mu.RLock()
 	defer pt.mu.RUnlock()
-	return pt.gpuBuf
+	return pt.bufPacked
+}
+
+// BufferPacked returns the packed DBW words GPU buffer.
+func (pt *PersistentGpuTensor) BufferPacked() *GpuBuffer {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+	return pt.bufPacked
+}
+
+// BufferInt64 returns the 64-bit element GPU buffer used by the optimizer.
+func (pt *PersistentGpuTensor) BufferInt64() *GpuBuffer {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+	return pt.bufInt64
+}
+
+// BufferGrad returns the 64-bit gradient accumulation GPU buffer.
+func (pt *PersistentGpuTensor) BufferGrad() *GpuBuffer {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+	return pt.bufGrad
+}
+
+// BufferVel returns the 64-bit optimizer velocity GPU buffer.
+func (pt *PersistentGpuTensor) BufferVel() *GpuBuffer {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+	return pt.bufVel
+}
+
+// IsAllocated reports whether the GPU buffers are allocated and ready.
+func (pt *PersistentGpuTensor) IsAllocated() bool {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+	return pt.bufPacked != nil && pt.bufInt64 != nil
+}
+
+// ClearGrad zeroes out the resident GPU gradient buffer.
+func (pt *PersistentGpuTensor) ClearGrad() {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+	if pt.bufGrad != nil {
+		pt.bufGrad.Clear()
+	}
 }
 
 // Tensor returns the underlying DynamicBitTensor.
@@ -125,12 +223,24 @@ func (pt *PersistentGpuTensor) IsDirty() bool {
 	return pt.isDirty
 }
 
-// Free releases the persistent GPU buffer.
+// Free releases all persistent GPU buffers.
 func (pt *PersistentGpuTensor) Free() {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
-	if pt.gpuBuf != nil {
-		pt.gpuBuf.Free()
-		pt.gpuBuf = nil
+	if pt.bufPacked != nil {
+		pt.bufPacked.Free()
+		pt.bufPacked = nil
+	}
+	if pt.bufInt64 != nil {
+		pt.bufInt64.Free()
+		pt.bufInt64 = nil
+	}
+	if pt.bufGrad != nil {
+		pt.bufGrad.Free()
+		pt.bufGrad = nil
+	}
+	if pt.bufVel != nil {
+		pt.bufVel.Free()
+		pt.bufVel = nil
 	}
 }

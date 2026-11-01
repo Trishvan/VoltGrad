@@ -3,6 +3,7 @@ package voltgrad
 import (
 	_ "embed"
 	"fmt"
+	"sync"
 	"time"
 	"unsafe"
 )
@@ -55,6 +56,8 @@ type ComputeKernel struct {
 	queryPool    uint64
 	numBindings  int
 	pushSize     uint32
+	inFlight     bool
+	mu           sync.Mutex
 }
 
 // NewComputeKernel compiles SPIR-V bytecode into a Vulkan compute pipeline with specified storage bindings and push constant size.
@@ -270,16 +273,32 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 
 // ExecutionToken represents an in-flight asynchronous GPU compute submission.
 type ExecutionToken struct {
-	kernel *ComputeKernel
+	kernel    *ComputeKernel
+	completed bool
+	mu        sync.Mutex
 }
 
 // Wait blocks until the asynchronous GPU compute operation completes or the timeout expires.
 // Pass timeoutNs in nanoseconds (e.g. 2_000_000_000 for 2 seconds).
 func (t *ExecutionToken) Wait(timeoutNs uint64) error {
+	if t == nil || t.kernel == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.completed {
+		return nil
+	}
+
 	r := vkSyscall(t.kernel.hw.getProc("vkWaitForFences"), t.kernel.hw.device, 1, uintptr(unsafe.Pointer(&t.kernel.fence)), 1, uintptr(timeoutNs))
 	if r != 0 {
 		return fmt.Errorf("GPU compute execution failed or timed out: %d", r)
 	}
+
+	t.completed = true
+	t.kernel.mu.Lock()
+	t.kernel.inFlight = false
+	t.kernel.mu.Unlock()
 	return nil
 }
 
@@ -291,6 +310,18 @@ func (k *ComputeKernel) DispatchAsync(buffers []*GpuBuffer, pushData unsafe.Poin
 	}
 	if workgroups == 0 {
 		workgroups = 1
+	}
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	// If a previous asynchronous dispatch is still in-flight on this kernel, await completion first
+	if k.inFlight {
+		r := vkSyscall(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(2000000000))
+		if r != 0 {
+			return nil, fmt.Errorf("previous asynchronous kernel execution still pending or timed out: %d", r)
+		}
+		k.inFlight = false
 	}
 
 	// Update descriptor sets
@@ -352,6 +383,7 @@ func (k *ComputeKernel) DispatchAsync(buffers []*GpuBuffer, pushData unsafe.Poin
 		return nil, fmt.Errorf("vkQueueSubmit failed: %d", r)
 	}
 
+	k.inFlight = true
 	return &ExecutionToken{kernel: k}, nil
 }
 
@@ -445,7 +477,9 @@ func (k *ComputeKernel) DispatchProfiled(buffers []*GpuBuffer, pushData unsafe.P
 			r = vkSyscall(getQPResults, k.hw.device, uintptr(k.queryPool), 0, 2, 16, uintptr(unsafe.Pointer(&timestamps[0])), 8, 1|2)
 			if r == 0 && timestamps[1] >= timestamps[0] {
 				ticks := timestamps[1] - timestamps[0]
-				return time.Duration(ticks), nil
+				period := k.hw.TimestampPeriod()
+				nanos := float64(ticks) * float64(period)
+				return time.Duration(nanos), nil
 			}
 		}
 	}
@@ -463,6 +497,14 @@ func (k *ComputeKernel) DispatchProfiled(buffers []*GpuBuffer, pushData unsafe.P
 
 // Close releases all Vulkan resources associated with this kernel.
 func (k *ComputeKernel) Close() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	if k.inFlight && k.fence != 0 {
+		vkSyscall(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(1000000000))
+		k.inFlight = false
+	}
+
 	if k.queryPool != 0 {
 		destroyQP := k.hw.getProc("vkDestroyQueryPool")
 		if destroyQP != 0 {

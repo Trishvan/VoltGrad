@@ -172,6 +172,21 @@ func (opt *DynamicBitOptimizer) StepGPU(gpu *GpuEngine, model ModelArchitecture)
 		g := grads[pIdx]
 		v := opt.velocities[0][pIdx]
 
+		if pt := p.PersistentGPU(); pt != nil && pt.IsAllocated() {
+			oldBits := p.BitWidth()
+			newBits, err := gpu.OptimizerStepResident(
+				pt.BufferInt64(), pt.BufferGrad(), pt.BufferVel(), pt.BufferPacked(),
+				p.Len(), oldBits, opt.config)
+			if err != nil {
+				return nil, fmt.Errorf("resident GPU optimizer step failed on param %d: %w", pIdx, err)
+			}
+			p.SetBitWidth(newBits)
+			if newBits > oldBits {
+				wideningNotices = append(wideningNotices, fmt.Sprintf("Param[%d]: DBW extended %d bits -> %d bits on GPU (Zero Clipping)", pIdx, oldBits, newBits))
+			}
+			continue
+		}
+
 		oldBits := p.BitWidth()
 		newBits, err := gpu.OptimizerStep(p, g, v, opt.config)
 		if err != nil {

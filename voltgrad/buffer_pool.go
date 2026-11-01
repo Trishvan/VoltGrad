@@ -48,7 +48,11 @@ func (p *BufferPool) Get(size uint64) (*GpuBuffer, error) {
 		buf := list[len(list)-1]
 		p.pools[capSize] = list[:len(list)-1]
 		p.mu.Unlock()
+
+		buf.mu.Lock()
+		buf.inUse = true
 		buf.size = size
+		buf.mu.Unlock()
 		return buf, nil
 	}
 	p.mu.Unlock()
@@ -61,17 +65,27 @@ func (p *BufferPool) Get(size uint64) (*GpuBuffer, error) {
 	buf.pool = p
 	buf.capacity = capSize
 	buf.size = size
+	buf.inUse = true
+	buf.isFreed = false
 	return buf, nil
 }
 
 // Put returns a buffer back to the pool for reuse.
 func (p *BufferPool) Put(buf *GpuBuffer) {
-	if buf == nil || buf.mapped == nil {
+	if buf == nil || buf.mapped == nil || buf.IsFreed() {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.pools[buf.capacity] = append(p.pools[buf.capacity], buf)
+
+	// Guard against duplicate buffer insertion in the pool
+	list := p.pools[buf.capacity]
+	for _, existing := range list {
+		if existing == buf {
+			return
+		}
+	}
+	p.pools[buf.capacity] = append(list, buf)
 }
 
 // Clear releases all pooled GPU buffers from memory.
@@ -89,12 +103,22 @@ func (p *BufferPool) Clear() {
 }
 
 // Release returns the buffer to its pool if pooled, or frees it immediately.
+// Double-release calls are safely ignored without corrupting pool buckets.
 func (b *GpuBuffer) Release() {
 	if b == nil {
 		return
 	}
-	if b.pool != nil {
-		b.pool.Put(b)
+	b.mu.Lock()
+	if b.isFreed || !b.inUse {
+		b.mu.Unlock()
+		return
+	}
+	b.inUse = false
+	pool := b.pool
+	b.mu.Unlock()
+
+	if pool != nil {
+		pool.Put(b)
 	} else {
 		b.Free()
 	}

@@ -13,10 +13,11 @@ import (
 // (e.g., 2-bit -> 3-bit -> ... -> 16-bit -> 32-bit -> 64-bit) and re-packs the underlying raw bitstream
 // with zero clipping and zero quantization noise.
 type DynamicBitTensor struct {
-	shape    []int
-	length   int
-	bitWidth int
-	data     []byte
+	shape       []int
+	length      int
+	bitWidth    int
+	data        []byte
+	gpuResident *PersistentGpuTensor
 }
 
 // NewDynamicBitTensor creates a new dynamic bit tensor with the specified shape and initial bit width (2..64).
@@ -64,6 +65,28 @@ func (t *DynamicBitTensor) Len() int {
 // BitWidth returns the active bits per element.
 func (t *DynamicBitTensor) BitWidth() int {
 	return t.bitWidth
+}
+
+// SetBitWidth manually overrides the active bit width within [2, 64], widening if necessary.
+func (t *DynamicBitTensor) SetBitWidth(w int) {
+	if w < 2 || w > 64 {
+		return
+	}
+	if w > t.bitWidth {
+		t.Widen(w)
+	} else if w < t.bitWidth {
+		t.bitWidth = w
+	}
+}
+
+// SetPersistentGPU binds a persistent GPU tensor instance to this DynamicBitTensor.
+func (t *DynamicBitTensor) SetPersistentGPU(pt *PersistentGpuTensor) {
+	t.gpuResident = pt
+}
+
+// PersistentGPU returns the persistent GPU tensor instance if bound, or nil.
+func (t *DynamicBitTensor) PersistentGPU() *PersistentGpuTensor {
+	return t.gpuResident
 }
 
 // MemoryBytes returns the actual physical bytes consumed by the packed bitstream.
@@ -275,14 +298,15 @@ func (t *DynamicBitTensor) FromInt64Slice(values []int64) {
 	if len(values) != t.length {
 		panic(fmt.Sprintf("slice length %d does not match tensor length %d", len(values), t.length))
 	}
-	maxBits := 2
+	maxBits := t.bitWidth
 	for _, v := range values {
 		b := BitsNeeded64(v)
 		if b > maxBits {
 			maxBits = b
 		}
 	}
-	if maxBits > t.bitWidth {
+	neededBytes := (t.length*maxBits + 7) / 8
+	if maxBits > t.bitWidth || len(t.data) < neededBytes {
 		t.Widen(maxBits)
 	}
 	for i, v := range values {

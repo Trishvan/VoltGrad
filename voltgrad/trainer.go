@@ -66,6 +66,7 @@ type VulkanTrainingPipeline struct {
 	gpu       *GpuEngine
 	optimizer *DynamicBitOptimizer
 	config    TrainingConfig
+	model     ModelArchitecture
 }
 
 // NewTrainingPipeline initializes the GPU runtime and connects the optimizer.
@@ -97,12 +98,22 @@ func NewTrainingPipeline(config TrainingConfig, model ModelArchitecture) (*Vulka
 
 	opt := NewDynamicBitOptimizer(config.OptimizerConfig, model)
 
+	if bindable, ok := model.(GpuResidentModel); ok {
+		if err := bindable.BindGPU(hw); err != nil {
+			gpu.Close()
+			pipe.Close()
+			hw.Close()
+			return nil, fmt.Errorf("failed binding model to GPU: %w", err)
+		}
+	}
+
 	return &VulkanTrainingPipeline{
 		hw:        hw,
 		pipeline:  pipe,
 		gpu:       gpu,
 		optimizer: opt,
 		config:    config,
+		model:     model,
 	}, nil
 }
 
@@ -229,6 +240,13 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 		meanLoss := int32(totalLoss / int64(n))
 		dur := time.Since(start)
 
+		// Synchronize resident GPU model parameters to host CPU for accurate metrics reporting
+		if bindable, ok := model.(GpuResidentModel); ok {
+			if err := bindable.SyncToHost(); err != nil {
+				return nil, fmt.Errorf("epoch %d sync to host failed: %w", epoch, err)
+			}
+		}
+
 		// Record parameter bit-widths
 		bitWidths := make([]int, len(model.Parameters()))
 		for i, param := range model.Parameters() {
@@ -259,6 +277,12 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 
 // Close terminates GPU pipelines and device handles.
 func (p *VulkanTrainingPipeline) Close() {
+	if p.model != nil {
+		if bindable, ok := p.model.(GpuResidentModel); ok {
+			bindable.FreeGPU()
+		}
+		p.model = nil
+	}
 	if p.gpu != nil {
 		p.gpu.Close()
 		p.gpu = nil

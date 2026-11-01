@@ -74,6 +74,20 @@ type BatchedModelArchitecture interface {
 	BackwardBatched(ctx *ComputeContext, dLoss []int32, batchSize int) error
 }
 
+// GpuResidentModel extends ModelArchitecture for models that bind and maintain persistent tensors in GPU memory.
+type GpuResidentModel interface {
+	ModelArchitecture
+
+	// BindGPU allocates and binds persistent GPU buffers for model parameters and gradients.
+	BindGPU(hw *HardwareContext) error
+
+	// SyncToHost reads back resident GPU weights and biases into CPU memory.
+	SyncToHost() error
+
+	// FreeGPU releases all persistent GPU memory buffers allocated for the model.
+	FreeGPU()
+}
+
 // ComputeContext provides access to GPU dispatch and acceleration helpers during Forward and Backward.
 type ComputeContext struct {
 	pipeline *Pipeline

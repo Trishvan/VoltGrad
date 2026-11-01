@@ -434,3 +434,22 @@ func TestPersistentGpuTensorLifecycle(t *testing.T) {
 
 	t.Log(">>> Persistent GPU Tensor Lifecycle and Host Synchronization VERIFIED! <<<")
 }
+
+// TestDeviceTimestampPeriod verifies that timestampPeriod is properly queried and parsed from physical device limits.
+func TestDeviceTimestampPeriod(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer hw.Close()
+
+	period := hw.TimestampPeriod()
+	if period <= 0 {
+		t.Fatalf("Expected positive timestamp period, got %f", period)
+	}
+	report := hw.DeviceReport()
+	if report.TimestampPeriod <= 0 {
+		t.Fatalf("Expected positive TimestampPeriod in DeviceReport, got %f", report.TimestampPeriod)
+	}
+	t.Logf(">>> Vulkan Hardware Timestamp Period Verified: %.2f ns/tick <<<", period)
+}

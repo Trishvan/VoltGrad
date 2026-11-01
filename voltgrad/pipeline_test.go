@@ -55,6 +55,29 @@ func (m *ExampleMLPArchitecture) ZeroGrad() {
 	m.fc2.ZeroGrad()
 }
 
+func (m *ExampleMLPArchitecture) BindGPU(hw *HardwareContext) error {
+	if err := m.fc1.BindGPU(hw); err != nil {
+		return err
+	}
+	if err := m.fc2.BindGPU(hw); err != nil {
+		m.fc1.FreeGPU()
+		return err
+	}
+	return nil
+}
+
+func (m *ExampleMLPArchitecture) SyncToHost() error {
+	if err := m.fc1.SyncToHost(); err != nil {
+		return err
+	}
+	return m.fc2.SyncToHost()
+}
+
+func (m *ExampleMLPArchitecture) FreeGPU() {
+	m.fc1.FreeGPU()
+	m.fc2.FreeGPU()
+}
+
 func (m *ExampleMLPArchitecture) Forward(ctx *ComputeContext, x []int32) ([]int32, error) {
 	// 1. FC1 Forward (accelerated on GPU)
 	h1, err := m.fc1.ForwardCtx(ctx, x, Q16FractionalBits)
@@ -224,4 +247,113 @@ func TestVulkanTrainingPipelineWithDBW(t *testing.T) {
 	}
 
 	fmt.Println("\n>>> TEST PASSED: Vulkan portable training pipeline successfully trained custom model architecture with Dynamic Bit Widening! <<<")
+}
+
+// TestTrainingPipelinePersistentWeightsParity validates that GPU persistent tensor training converges
+// with 100% mathematical bit-for-bit parity against the CPU mathematical reference.
+func TestTrainingPipelinePersistentWeightsParity(t *testing.T) {
+	// 1. Prepare identical input dataset
+	numSamples := 32
+	batchSize := 16
+	epochs := 3
+
+	inputs := make([][]int32, numSamples)
+	targets := make([][]int32, numSamples)
+	for i := 0; i < numSamples; i++ {
+		inputs[i] = []int32{16384, 32768, -8192, 24576}
+		targets[i] = []int32{32768, 65536}
+	}
+
+	// 2. Initialize identical GPU and CPU models
+	modelGPU := NewExampleMLPArchitecture()
+	modelGPU.fc1.InitWeightsIdentity(Q16One)
+	modelGPU.fc2.InitWeightsIdentity(Q16One)
+
+	modelCPU := NewExampleMLPArchitecture()
+	modelCPU.fc1.InitWeightsIdentity(Q16One)
+	modelCPU.fc2.InitWeightsIdentity(Q16One)
+
+	config := DefaultTrainingConfig()
+	config.Epochs = epochs
+	config.BatchSize = batchSize
+	config.OptimizerConfig.LearningRateQ16 = 3276
+	config.Verbose = false
+
+	// Train on GPU with persistent resident tensors
+	pipeline, err := NewTrainingPipeline(config, modelGPU)
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer pipeline.Close()
+
+	if _, err := pipeline.Train(modelGPU, inputs, targets); err != nil {
+		t.Fatalf("GPU training failed: %v", err)
+	}
+
+	// Train on CPU with reference loop
+	cpuCtx := NewComputeContext(nil)
+	cpuOpt := NewDynamicBitOptimizer(config.OptimizerConfig, modelCPU)
+	for ep := 1; ep <= epochs; ep++ {
+		for bStart := 0; bStart < numSamples; bStart += batchSize {
+			bEnd := bStart + batchSize
+			if bEnd > numSamples {
+				bEnd = numSamples
+			}
+			currB := bEnd - bStart
+			flatX := make([]int32, currB*4)
+			flatY := make([]int32, currB*2)
+			for i, idx := 0, bStart; idx < bEnd; i, idx = i+1, idx+1 {
+				copy(flatX[i*4:(i+1)*4], inputs[idx])
+				copy(flatY[i*2:(i+1)*2], targets[idx])
+			}
+
+			modelCPU.ZeroGrad()
+			preds, err := modelCPU.ForwardBatched(cpuCtx, flatX, currB)
+			if err != nil {
+				t.Fatalf("CPU forward failed: %v", err)
+			}
+
+			_, dLoss, err := ComputeLoss(LossMSE, preds, flatY, config.OptimizerConfig.FractionalBits)
+			if err != nil {
+				t.Fatalf("CPU loss failed: %v", err)
+			}
+
+			if err := modelCPU.BackwardBatched(cpuCtx, dLoss, currB); err != nil {
+				t.Fatalf("CPU backward failed: %v", err)
+			}
+
+			if _, err := cpuOpt.Step(modelCPU); err != nil {
+				t.Fatalf("CPU step failed: %v", err)
+			}
+		}
+	}
+
+	// 3. Compare weights bit-for-bit
+	paramsGPU := modelGPU.Parameters()
+	paramsCPU := modelCPU.Parameters()
+	if len(paramsGPU) != len(paramsCPU) {
+		t.Fatalf("Parameter count mismatch: GPU=%d, CPU=%d", len(paramsGPU), len(paramsCPU))
+	}
+
+	for pIdx := range paramsGPU {
+		pG := paramsGPU[pIdx]
+		pC := paramsCPU[pIdx]
+
+		if pG.BitWidth() != pC.BitWidth() {
+			t.Errorf("Parameter %d bit width mismatch: GPU=%d, CPU=%d", pIdx, pG.BitWidth(), pC.BitWidth())
+		}
+		if pG.Len() != pC.Len() {
+			t.Fatalf("Parameter %d length mismatch: GPU=%d, CPU=%d", pIdx, pG.Len(), pC.Len())
+		}
+
+		for elem := 0; elem < pG.Len(); elem++ {
+			valG := pG.Get(elem)
+			valC := pC.Get(elem)
+			if valG != valC {
+				t.Fatalf("Parameter %d element %d mismatch: GPU=%d, CPU=%d", pIdx, elem, valG, valC)
+			}
+		}
+	}
+
+	t.Log(">>> Persistent GPU Training Pipeline & CPU Reference: 100% BIT-FOR-BIT IDENTICAL! <<<")
 }
