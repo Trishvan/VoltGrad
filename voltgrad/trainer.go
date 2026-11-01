@@ -25,6 +25,29 @@ func DefaultTrainingConfig() TrainingConfig {
 	}
 }
 
+// Validate checks that training and optimizer configurations are valid.
+func (c *TrainingConfig) Validate() error {
+	if c.Epochs <= 0 {
+		return fmt.Errorf("epochs must be > 0, got %d", c.Epochs)
+	}
+	if c.BatchSize <= 0 {
+		return fmt.Errorf("batch size must be > 0, got %d", c.BatchSize)
+	}
+	if c.OptimizerConfig.LearningRateQ16 <= 0 {
+		return fmt.Errorf("learning rate Q16 must be > 0, got %d", c.OptimizerConfig.LearningRateQ16)
+	}
+	if c.OptimizerConfig.FractionalBits == 0 || c.OptimizerConfig.FractionalBits > 32 {
+		return fmt.Errorf("fractional bits must be in [1, 32], got %d", c.OptimizerConfig.FractionalBits)
+	}
+	if c.OptimizerConfig.MomentumBeta < 0 {
+		return fmt.Errorf("momentum beta must be >= 0, got %d", c.OptimizerConfig.MomentumBeta)
+	}
+	if c.OptimizerConfig.WeightDecayQ16 < 0 {
+		return fmt.Errorf("weight decay Q16 must be >= 0, got %d", c.OptimizerConfig.WeightDecayQ16)
+	}
+	return nil
+}
+
 // EpochMetrics captures training and optimization outcomes per epoch.
 type EpochMetrics struct {
 	Epoch           int
@@ -34,7 +57,7 @@ type EpochMetrics struct {
 	ParamBitWidths  []int
 }
 
-// VulkanTrainingPipeline provides a model-agnostic GPU training runtime (like PyTorch CUDA).
+// VulkanTrainingPipeline provides a model-agnostic GPU training runtime with Adaptive, Vendor-Neutral GPU Computing for Go.
 // The developer only writes their architecture (implementing ModelArchitecture) and provides data.
 // Dynamic Bit Widening (DBW) is monitored and applied automatically at every step.
 type VulkanTrainingPipeline struct {
@@ -47,6 +70,13 @@ type VulkanTrainingPipeline struct {
 
 // NewTrainingPipeline initializes the GPU runtime and connects the optimizer.
 func NewTrainingPipeline(config TrainingConfig, model ModelArchitecture) (*VulkanTrainingPipeline, error) {
+	if model == nil {
+		return nil, fmt.Errorf("model architecture cannot be nil")
+	}
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid training configuration: %w", err)
+	}
+
 	hw, err := NewHardwareContext()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize Vulkan hardware: %w", err)
@@ -78,6 +108,12 @@ func NewTrainingPipeline(config TrainingConfig, model ModelArchitecture) (*Vulka
 
 // Train executes the complete training loop over the user's custom architecture.
 func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32, targets [][]int32) ([]EpochMetrics, error) {
+	if model == nil {
+		return nil, fmt.Errorf("model architecture cannot be nil")
+	}
+	if err := p.config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid training configuration: %w", err)
+	}
 	if len(inputs) != len(targets) {
 		return nil, fmt.Errorf("inputs count %d != targets count %d", len(inputs), len(targets))
 	}
@@ -92,7 +128,7 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 
 	if p.config.Verbose {
 		fmt.Printf("========================================================================\n")
-		fmt.Printf("   VULKAN TRAINING PIPELINE (CUDA-Equivalent for Go) with DBW\n")
+		fmt.Printf("   VULKAN TRAINING PIPELINE — Adaptive, Vendor-Neutral GPU Computing for Go\n")
 		fmt.Printf("========================================================================\n")
 		fmt.Printf(" Model Architecture: %s\n", model.Name())
 		fmt.Printf(" Samples: %d, Batch Size: %d, Epochs: %d\n", n, p.config.BatchSize, p.config.Epochs)

@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"reflect"
 	"testing"
+	"unsafe"
 )
 
 // TestShaderInt64Validation verifies that shaderInt64 is supported and enabled on the hardware device.
@@ -314,7 +315,7 @@ func TestRandomizedGPUCPUParity(t *testing.T) {
 
 	for trial := 0; trial < 10; trial++ {
 		size := rng.Intn(64) + 8     // 8..71 elements
-		initBits := rng.Intn(40) + 2 // 2..41 bits
+		initBits := rng.Intn(63) + 2 // 2..64 bits (full arbitrary precision spectrum)
 		minV, maxV := MinMax64(initBits)
 		span := maxV - minV
 		if span <= 0 || span > math.MaxInt64/2 {
@@ -378,4 +379,379 @@ func TestRandomizedGPUCPUParity(t *testing.T) {
 	}
 
 	t.Log(">>> Randomized GPU/CPU parity verified across all randomized trials! <<<")
+}
+
+// TestFull64BitMatMulForwardBackwardParity verifies forward and backward passes with >32-bit weights and overflow clamping.
+func TestFull64BitMatMulForwardBackwardParity(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Fatalf("Failed to init hardware: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		t.Fatalf("Failed to init GPU engine: %v", err)
+	}
+	defer gpu.Close()
+
+	inDim := 4
+	outDim := 3
+	shift := uint(16)
+
+	// Weights with true 64-bit values (>32-bit range)
+	wWeights := []int64{
+		int64(1) << 35, -(int64(1) << 35), int64(1) << 40, -(int64(1) << 40),
+		int64(1) << 45, -(int64(1) << 45), int64(1) << 50, -(int64(1) << 50),
+		math.MaxInt64 / 2, -(math.MaxInt64 / 2), 65536, -65536,
+	}
+
+	w := NewDynamicBitTensor([]int{outDim, inDim}, 64)
+	for i, val := range wWeights {
+		w.Set(i, val)
+	}
+
+	bias := NewDynamicBitTensor([]int{outDim}, 64)
+	bias.Set(0, 1000)
+	bias.Set(1, -2000)
+	bias.Set(2, 3000)
+
+	x := []int32{65536, -32768, 16384, -8192}
+	dOut := []int32{32768, -16384, 8192}
+
+	// 1. Forward Pass
+	cpuOut, err := MatMulVecWithBias64(w, x, bias, shift)
+	if err != nil {
+		t.Fatalf("CPU MatMulVecWithBias64 failed: %v", err)
+	}
+
+	gpuOut, err := gpu.MatMulForward(w, x, bias, shift)
+	if err != nil {
+		t.Fatalf("GPU MatMulForward failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(cpuOut, gpuOut) {
+		t.Fatalf("MatMulForward 64-bit mismatch: CPU=%v, GPU=%v", cpuOut, gpuOut)
+	}
+
+	// 2. Backward Pass
+	gradW_CPU := NewDynamicBitTensor([]int{outDim, inDim}, 64)
+	gradW_GPU := NewDynamicBitTensor([]int{outDim, inDim}, 64)
+	gradBias_CPU := NewDynamicBitTensor([]int{outDim}, 64)
+	gradBias_GPU := NewDynamicBitTensor([]int{outDim}, 64)
+
+	cpuDX, err := MatMulVecBackward(dOut, x, w, gradW_CPU, shift)
+	if err != nil {
+		t.Fatalf("CPU MatMulVecBackward failed: %v", err)
+	}
+	for i := 0; i < outDim; i++ {
+		gradBias_CPU.Add(i, int64(dOut[i]))
+	}
+
+	gpuDX, err := gpu.MatMulBackward(dOut, x, w, gradW_GPU, gradBias_GPU, shift)
+	if err != nil {
+		t.Fatalf("GPU MatMulBackward failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(cpuDX, gpuDX) {
+		t.Fatalf("MatMulBackward dX mismatch: CPU=%v, GPU=%v", cpuDX, gpuDX)
+	}
+
+	for i := 0; i < outDim*inDim; i++ {
+		if gradW_CPU.Get(i) != gradW_GPU.Get(i) {
+			t.Fatalf("gradW[%d] mismatch: CPU=%d, GPU=%d", i, gradW_CPU.Get(i), gradW_GPU.Get(i))
+		}
+	}
+	for i := 0; i < outDim; i++ {
+		if gradBias_CPU.Get(i) != gradBias_GPU.Get(i) {
+			t.Fatalf("gradBias[%d] mismatch: CPU=%d, GPU=%d", i, gradBias_CPU.Get(i), gradBias_GPU.Get(i))
+		}
+	}
+
+	t.Log(">>> Full 64-bit MatMul Forward & Backward parity verified bit-for-bit! <<<")
+}
+
+// TestRandomizedMatMulForwardBackwardParity validates random dimension and 2..64 bit-width parity.
+func TestRandomizedMatMulForwardBackwardParity(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Fatalf("Failed to init hardware: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		t.Fatalf("Failed to init GPU engine: %v", err)
+	}
+	defer gpu.Close()
+
+	rng := rand.New(rand.NewSource(123))
+
+	for trial := 0; trial < 10; trial++ {
+		inDim := rng.Intn(16) + 2
+		outDim := rng.Intn(16) + 2
+		shift := uint(rng.Intn(16) + 1)
+		bitWidth := rng.Intn(63) + 2 // 2..64 bits
+
+		minV, maxV := MinMax64(bitWidth)
+		span := maxV - minV
+		if span <= 0 || span > math.MaxInt64/2 {
+			span = 1000000
+		}
+
+		w := NewDynamicBitTensor([]int{outDim, inDim}, bitWidth)
+		for i := 0; i < outDim*inDim; i++ {
+			w.Set(i, minV+(rng.Int63()%span))
+		}
+
+		bias := NewDynamicBitTensor([]int{outDim}, bitWidth)
+		for i := 0; i < outDim; i++ {
+			bias.Set(i, minV+(rng.Int63()%span))
+		}
+
+		x := make([]int32, inDim)
+		for i := 0; i < inDim; i++ {
+			x[i] = int32((rng.Int63() % 65536) - 32768)
+		}
+
+		dOut := make([]int32, outDim)
+		for i := 0; i < outDim; i++ {
+			dOut[i] = int32((rng.Int63() % 65536) - 32768)
+		}
+
+		// Forward
+		cpuOut, err := MatMulVecWithBias64(w, x, bias, shift)
+		if err != nil {
+			t.Fatalf("Trial %d: CPU MatMulVecWithBias64 failed: %v", trial, err)
+		}
+
+		gpuOut, err := gpu.MatMulForward(w, x, bias, shift)
+		if err != nil {
+			t.Fatalf("Trial %d: GPU MatMulForward failed: %v", trial, err)
+		}
+
+		if !reflect.DeepEqual(cpuOut, gpuOut) {
+			t.Fatalf("Trial %d: Forward mismatch: CPU=%v, GPU=%v", trial, cpuOut, gpuOut)
+		}
+
+		// Backward
+		gradW_CPU := NewDynamicBitTensor([]int{outDim, inDim}, bitWidth)
+		gradW_GPU := NewDynamicBitTensor([]int{outDim, inDim}, bitWidth)
+		gradBias_CPU := NewDynamicBitTensor([]int{outDim}, bitWidth)
+		gradBias_GPU := NewDynamicBitTensor([]int{outDim}, bitWidth)
+
+		cpuDX, err := MatMulVecBackward(dOut, x, w, gradW_CPU, shift)
+		if err != nil {
+			t.Fatalf("Trial %d: CPU MatMulVecBackward failed: %v", trial, err)
+		}
+		for i := 0; i < outDim; i++ {
+			gradBias_CPU.Add(i, int64(dOut[i]))
+		}
+
+		gpuDX, err := gpu.MatMulBackward(dOut, x, w, gradW_GPU, gradBias_GPU, shift)
+		if err != nil {
+			t.Fatalf("Trial %d: GPU MatMulBackward failed: %v", trial, err)
+		}
+
+		if !reflect.DeepEqual(cpuDX, gpuDX) {
+			t.Fatalf("Trial %d: Backward dX mismatch: CPU=%v, GPU=%v", trial, cpuDX, gpuDX)
+		}
+
+		for i := 0; i < outDim*inDim; i++ {
+			if gradW_CPU.Get(i) != gradW_GPU.Get(i) {
+				t.Fatalf("Trial %d: gradW[%d] mismatch: CPU=%d, GPU=%d", trial, i, gradW_CPU.Get(i), gradW_GPU.Get(i))
+			}
+		}
+		for i := 0; i < outDim; i++ {
+			if gradBias_CPU.Get(i) != gradBias_GPU.Get(i) {
+				t.Fatalf("Trial %d: gradBias[%d] mismatch: CPU=%d, GPU=%d", trial, i, gradBias_CPU.Get(i), gradBias_GPU.Get(i))
+			}
+		}
+	}
+
+	t.Log(">>> Randomized 2..64-bit MatMul Forward & Backward parity verified! <<<")
+}
+
+// TestRandomizedDBWRepackParity verifies bitstream packing on GPU against CPU across all widths 2..64.
+func TestRandomizedDBWRepackParity(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Fatalf("Failed to init hardware: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		t.Fatalf("Failed to init GPU engine: %v", err)
+	}
+	defer gpu.Close()
+
+	rng := rand.New(rand.NewSource(999))
+	count := 25
+
+	for w := 2; w <= 64; w++ {
+		minV, maxV := MinMax64(w)
+		span := maxV - minV
+		if span <= 0 || span > math.MaxInt64/2 {
+			span = 1000000
+		}
+
+		values := make([]int64, count)
+		tensorCPU := NewDynamicBitTensor([]int{count}, w)
+		for i := 0; i < count; i++ {
+			val := minV + (rng.Int63() % span)
+			values[i] = val
+			tensorCPU.Set(i, val)
+		}
+
+		// GPU repack
+		bufWeights, err := hw.CreateHostCoherentBuffer(uint64(count * 8))
+		if err != nil {
+			t.Fatalf("CreateHostCoherentBuffer failed: %v", err)
+		}
+		bufWeights.WriteInt64(values)
+
+		totalBits := count * w
+		numWords := (totalBits + 31) / 32
+		if numWords == 0 {
+			numWords = 1
+		}
+		bufPacked, err := hw.CreateHostCoherentBuffer(uint64(numWords * 4))
+		if err != nil {
+			bufWeights.Free()
+			t.Fatalf("CreateHostCoherentBuffer packed failed: %v", err)
+		}
+		bufPacked.Clear()
+
+		pushRepack := [2]uint32{uint32(count), uint32(w)}
+		wg := uint32((count + 63) / 64)
+		if err := gpu.kernelRepack.Dispatch([]*GpuBuffer{bufWeights, bufPacked}, unsafe.Pointer(&pushRepack[0]), 8, wg); err != nil {
+			bufWeights.Free()
+			bufPacked.Free()
+			t.Fatalf("Width %d repack dispatch failed: %v", w, err)
+		}
+
+		gpuWords := bufPacked.ReadUint32(numWords)
+		bufWeights.Free()
+		bufPacked.Free()
+
+		tensorGPU := NewDynamicBitTensor([]int{count}, w)
+		tensorGPU.SetWords(gpuWords, w)
+
+		for i := 0; i < count; i++ {
+			if tensorCPU.Get(i) != tensorGPU.Get(i) {
+				t.Fatalf("Width %d element %d mismatch: CPU=%d, GPU=%d", w, i, tensorCPU.Get(i), tensorGPU.Get(i))
+			}
+		}
+	}
+
+	t.Log(">>> Randomized DBW Repack parity verified across all widths 2..64! <<<")
+}
+
+// TestTrainerConfigValidation verifies proper validation of training configurations.
+func TestTrainerConfigValidation(t *testing.T) {
+	mockModel := &singleTensorModel{
+		param: NewDynamicBitTensor([]int{4}, 2),
+		grad:  NewDynamicBitTensor([]int{4}, 2),
+	}
+
+	// 1. Invalid BatchSize <= 0
+	cfg := DefaultTrainingConfig()
+	cfg.BatchSize = 0
+	_, err := NewTrainingPipeline(cfg, mockModel)
+	if err == nil {
+		t.Fatalf("Expected error for BatchSize=0, got nil")
+	}
+
+	cfg.BatchSize = -5
+	_, err = NewTrainingPipeline(cfg, mockModel)
+	if err == nil {
+		t.Fatalf("Expected error for BatchSize=-5, got nil")
+	}
+
+	// 2. Invalid Epochs <= 0
+	cfg = DefaultTrainingConfig()
+	cfg.Epochs = 0
+	_, err = NewTrainingPipeline(cfg, mockModel)
+	if err == nil {
+		t.Fatalf("Expected error for Epochs=0, got nil")
+	}
+
+	// 3. Nil model
+	cfg = DefaultTrainingConfig()
+	_, err = NewTrainingPipeline(cfg, nil)
+	if err == nil {
+		t.Fatalf("Expected error for nil model, got nil")
+	}
+
+	// 4. Invalid LR <= 0
+	cfg = DefaultTrainingConfig()
+	cfg.OptimizerConfig.LearningRateQ16 = 0
+	_, err = NewTrainingPipeline(cfg, mockModel)
+	if err == nil {
+		t.Fatalf("Expected error for LR=0, got nil")
+	}
+
+	t.Log(">>> Trainer configuration validation verified! <<<")
+}
+
+// TestMatMulBackwardInputValidation verifies robust dimension and nil pointer checks.
+func TestMatMulBackwardInputValidation(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Fatalf("Failed to init hardware: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		t.Fatalf("Failed to init GPU engine: %v", err)
+	}
+	defer gpu.Close()
+
+	w := NewDynamicBitTensor([]int{3, 4}, 16)
+	gradW := NewDynamicBitTensor([]int{3, 4}, 16)
+	gradBias := NewDynamicBitTensor([]int{3}, 16)
+	dOut := make([]int32, 3)
+	x := make([]int32, 4)
+
+	// 1. Nil w
+	if _, err := gpu.MatMulBackward(dOut, x, nil, gradW, gradBias, 16); err == nil {
+		t.Fatalf("Expected error for nil w, got nil")
+	}
+
+	// 2. Nil gradW
+	if _, err := gpu.MatMulBackward(dOut, x, w, nil, gradBias, 16); err == nil {
+		t.Fatalf("Expected error for nil gradW, got nil")
+	}
+
+	// 3. Mismatched dOut length
+	if _, err := gpu.MatMulBackward(make([]int32, 5), x, w, gradW, gradBias, 16); err == nil {
+		t.Fatalf("Expected error for mismatched dOut length, got nil")
+	}
+
+	// 4. Mismatched x length
+	if _, err := gpu.MatMulBackward(dOut, make([]int32, 2), w, gradW, gradBias, 16); err == nil {
+		t.Fatalf("Expected error for mismatched x length, got nil")
+	}
+
+	// 5. Mismatched gradW length
+	wrongGradW := NewDynamicBitTensor([]int{2, 2}, 16)
+	if _, err := gpu.MatMulBackward(dOut, x, w, wrongGradW, gradBias, 16); err == nil {
+		t.Fatalf("Expected error for mismatched gradW length, got nil")
+	}
+
+	// 6. Mismatched gradBias length
+	wrongGradBias := NewDynamicBitTensor([]int{5}, 16)
+	if _, err := gpu.MatMulBackward(dOut, x, w, gradW, wrongGradBias, 16); err == nil {
+		t.Fatalf("Expected error for mismatched gradBias length, got nil")
+	}
+
+	// 7. Non-2D weight tensor
+	flatW := NewDynamicBitTensor([]int{12}, 16)
+	if _, err := gpu.MatMulBackward(dOut, x, flatW, gradW, gradBias, 16); err == nil {
+		t.Fatalf("Expected error for 1D weight tensor, got nil")
+	}
+
+	t.Log(">>> MatMulBackward input validation verified! <<<")
 }

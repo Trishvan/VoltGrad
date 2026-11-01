@@ -69,13 +69,22 @@ func NewGpuEngine(hw *HardwareContext) (*GpuEngine, error) {
 
 // MatMulForward executes Y = (W * x) >> shift + bias on the GPU with DBW dequantization in registers.
 func (e *GpuEngine) MatMulForward(w *DynamicBitTensor, x []int32, bias *DynamicBitTensor, shift uint) ([]int32, error) {
+	if w == nil {
+		return nil, fmt.Errorf("weight tensor is nil")
+	}
 	shape := w.Shape()
 	if len(shape) != 2 {
 		return nil, fmt.Errorf("weight tensor must be 2D, got %v", shape)
 	}
 	outDim, inDim := shape[0], shape[1]
+	if outDim <= 0 || inDim <= 0 {
+		return nil, fmt.Errorf("invalid weight tensor dimensions: %dx%d", outDim, inDim)
+	}
 	if len(x) != inDim {
 		return nil, fmt.Errorf("input vector len %d != inDim %d", len(x), inDim)
+	}
+	if bias != nil && bias.Len() != outDim {
+		return nil, fmt.Errorf("bias len %d != outDim %d", bias.Len(), outDim)
 	}
 
 	bufX, err := e.hw.CreateHostCoherentBuffer(uint64(len(x) * 4))
@@ -138,8 +147,32 @@ func (e *GpuEngine) MatMulForward(w *DynamicBitTensor, x []int32, bias *DynamicB
 
 // MatMulBackward executes dX = (W^T * dOut) >> shift and accumulates dW on the GPU.
 func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor, gradW *DynamicBitTensor, gradBias *DynamicBitTensor, shift uint) ([]int32, error) {
+	if w == nil {
+		return nil, fmt.Errorf("weight tensor is nil")
+	}
 	shape := w.Shape()
+	if len(shape) != 2 {
+		return nil, fmt.Errorf("weight tensor must be 2D, got %v", shape)
+	}
 	outDim, inDim := shape[0], shape[1]
+	if outDim <= 0 || inDim <= 0 {
+		return nil, fmt.Errorf("invalid weight tensor dimensions: %dx%d", outDim, inDim)
+	}
+	if len(dOut) != outDim {
+		return nil, fmt.Errorf("dOut length %d != outDim %d", len(dOut), outDim)
+	}
+	if len(x) != inDim {
+		return nil, fmt.Errorf("x length %d != inDim %d", len(x), inDim)
+	}
+	if gradW == nil {
+		return nil, fmt.Errorf("gradW tensor is nil")
+	}
+	if gradW.Len() != outDim*inDim {
+		return nil, fmt.Errorf("gradW length %d != outDim*inDim %d", gradW.Len(), outDim*inDim)
+	}
+	if gradBias != nil && gradBias.Len() != outDim {
+		return nil, fmt.Errorf("gradBias length %d != outDim %d", gradBias.Len(), outDim)
+	}
 
 	// 1. Compute dX on GPU
 	bufDOut, err := e.hw.CreateHostCoherentBuffer(uint64(len(dOut) * 4))
@@ -239,6 +272,9 @@ func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor,
 
 // OptimizerStep executes parameter updates on the GPU, monitors Dynamic Bit Widening, and repacks storage.
 func (e *GpuEngine) OptimizerStep(p *DynamicBitTensor, g *DynamicBitTensor, v *DynamicBitTensor, cfg OptimizerConfig) (int, error) {
+	if p == nil || g == nil || v == nil {
+		return 0, fmt.Errorf("tensor parameter, gradient, or velocity is nil")
+	}
 	count := p.Len()
 	if g.Len() != count || v.Len() != count {
 		return p.BitWidth(), fmt.Errorf("tensor length mismatch in OptimizerStep")

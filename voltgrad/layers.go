@@ -37,16 +37,11 @@ func NewLinearLayer(name string, inDim, outDim int, initialBits int, useBias boo
 
 // Forward computes output = (W * x) >> shift + bias.
 func (l *LinearLayer) Forward(x []int32, shift uint) ([]int32, error) {
-	out, err := MatMulVec64(l.Weight, x, shift)
-	if err != nil {
-		return nil, err
-	}
+	var bias *DynamicBitTensor
 	if l.UseBias {
-		for i := 0; i < l.OutDim; i++ {
-			out[i] += l.Bias.GetInt32(i)
-		}
+		bias = l.Bias
 	}
-	return out, nil
+	return MatMulVecWithBias64(l.Weight, x, bias, shift)
 }
 
 // ForwardCtx computes output using physical GPU acceleration when available, with automatic CPU fallback.

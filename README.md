@@ -1,8 +1,9 @@
-# VoltGrad — Vulkan Portable Training Pipeline (CUDA-Equivalent for Go)
+# VoltGrad — Adaptive, Vendor-Neutral GPU Computing for Go
 
 A fully self-contained, model-agnostic Vulkan GPU training pipeline for Go with **Mandatory Dynamic Bit Widening (DBW)**.
 
-Just like writing PyTorch models with CUDA in Python:
+VoltGrad brings **adaptive, vendor-neutral GPU computing** to Go without proprietary vendor lock-in or heavyweight runtime dependencies. Rather than claiming immediate parity with mature single-vendor ecosystems, VoltGrad prioritizes portability, hardware neutrality across all Vulkan-compliant devices (Intel, AMD, NVIDIA, Apple Silicon via MoltenVK, and mobile platforms), and arbitrary-precision integer representations with zero clipping. Reproducible benchmarks will empirically establish how close execution performance gets to CUDA as kernel optimizations progress.
+
 - The **developer only writes their model architecture** (`Forward` and `Backward` passes, layer definitions).
 - The pipeline handles **GPU hardware compute discovery, host-coherent zero-copy memory mapping, batching, loss computation, fixed-point optimizers (SGD, Momentum, Adam-Q)**, and **automatic Dynamic Bit Widening (DBW)**.
 - The `*Ctx` layer calls ride the **GPU** when the pipeline is open, with a CPU fallback that yields **bit-for-bit identical** integer results.
@@ -125,7 +126,7 @@ func main() {
 === RUN   TestVulkanTrainingPipelineWithDBW
     pipeline_test.go:137: Initial Parameter Bit-Widths: [18 2 18 2]
 ========================================================================
-   VULKAN TRAINING PIPELINE (CUDA-Equivalent for Go) with DBW
+   VULKAN TRAINING PIPELINE — Adaptive, Vendor-Neutral GPU Computing for Go
 ========================================================================
  Model Architecture: Example2LayerMLP_4x8x2
  Samples: 64, Batch Size: 16, Epochs: 5

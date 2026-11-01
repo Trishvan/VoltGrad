@@ -5,17 +5,24 @@ import (
 	"math"
 )
 
-// MatMulVec64 performs integer matrix-vector multiplication:
-//
-//	out[i] = (sum_j W[i,j] * x[j]) >> shift
-func MatMulVec64(w *DynamicBitTensor, x []int32, shift uint) ([]int32, error) {
+// MatMulVecWithBias64 computes Y = (W * x) >> shift + bias with 64-bit intermediate accumulation and clamping.
+func MatMulVecWithBias64(w *DynamicBitTensor, x []int32, bias *DynamicBitTensor, shift uint) ([]int32, error) {
+	if w == nil {
+		return nil, fmt.Errorf("weight tensor is nil")
+	}
 	shape := w.Shape()
 	if len(shape) != 2 {
 		return nil, fmt.Errorf("weight tensor must be 2D [rows, cols], got %v", shape)
 	}
 	rows, cols := shape[0], shape[1]
+	if rows <= 0 || cols <= 0 {
+		return nil, fmt.Errorf("invalid weight tensor dimensions: %dx%d", rows, cols)
+	}
 	if len(x) != cols {
 		return nil, fmt.Errorf("vector length %d != weight cols %d", len(x), cols)
+	}
+	if bias != nil && bias.Len() != rows {
+		return nil, fmt.Errorf("bias length %d != rows %d", bias.Len(), rows)
 	}
 
 	out := make([]int32, rows)
@@ -27,6 +34,9 @@ func MatMulVec64(w *DynamicBitTensor, x []int32, shift uint) ([]int32, error) {
 			accum += wVal * int64(x[c])
 		}
 		res := accum >> shift
+		if bias != nil {
+			res += bias.Get(r)
+		}
 		if res > math.MaxInt32 {
 			res = math.MaxInt32
 		} else if res < math.MinInt32 {
@@ -37,19 +47,41 @@ func MatMulVec64(w *DynamicBitTensor, x []int32, shift uint) ([]int32, error) {
 	return out, nil
 }
 
+// MatMulVec64 performs integer matrix-vector multiplication:
+//
+//	out[i] = (sum_j W[i,j] * x[j]) >> shift
+func MatMulVec64(w *DynamicBitTensor, x []int32, shift uint) ([]int32, error) {
+	return MatMulVecWithBias64(w, x, nil, shift)
+}
+
 // MatMulVecBackward computes gradients for weights and input vector:
 //
 //	dW[i,j] += (dOut[i] * x[j]) >> shift
 //	dX[j]   += (sum_i dOut[i] * W[i,j]) >> shift
 func MatMulVecBackward(dOut []int32, x []int32, w *DynamicBitTensor, dW *DynamicBitTensor, shift uint) ([]int32, error) {
+	if w == nil {
+		return nil, fmt.Errorf("weight tensor is nil")
+	}
 	shape := w.Shape()
+	if len(shape) != 2 {
+		return nil, fmt.Errorf("weight tensor must be 2D [rows, cols], got %v", shape)
+	}
 	rows, cols := shape[0], shape[1]
+	if rows <= 0 || cols <= 0 {
+		return nil, fmt.Errorf("invalid weight dimensions: %dx%d", rows, cols)
+	}
 
 	if len(dOut) != rows {
 		return nil, fmt.Errorf("dOut len %d != rows %d", len(dOut), rows)
 	}
 	if len(x) != cols {
 		return nil, fmt.Errorf("x len %d != cols %d", len(x), cols)
+	}
+	if dW == nil {
+		return nil, fmt.Errorf("gradW tensor is nil")
+	}
+	if dW.Len() != rows*cols {
+		return nil, fmt.Errorf("gradW len %d != rows*cols %d", dW.Len(), rows*cols)
 	}
 
 	dX := make([]int32, cols)
@@ -60,6 +92,11 @@ func MatMulVecBackward(dOut []int32, x []int32, w *DynamicBitTensor, dW *Dynamic
 			accum += int64(dOut[r]) * wVal
 		}
 		res := accum >> shift
+		if res > math.MaxInt32 {
+			res = math.MaxInt32
+		} else if res < math.MinInt32 {
+			res = math.MinInt32
+		}
 		dX[c] = int32(res)
 	}
 

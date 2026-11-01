@@ -24,13 +24,24 @@ async function main() {
     for (const name of files) {
         const compPath = path.join(__dirname, `${name}.comp`);
         const spvPath = path.join(__dirname, `${name}.spv`);
-        console.log(`Compiling ${compPath}...`);
-        const src = fs.readFileSync(compPath, 'utf8');
-        const spv = glslang.compileGLSL(src, 'compute');
-        fs.writeFileSync(spvPath, Buffer.from(spv.buffer, spv.byteOffset, spv.byteLength));
-        console.log(`Saved -> ${spvPath} (${spv.length * 4} bytes)`);
+        try {
+            console.log(`Compiling ${compPath}...`);
+            const src = fs.readFileSync(compPath, 'utf8');
+            const spv = glslang.compileGLSL(src, 'compute');
+            if (!spv || spv.length === 0) {
+                throw new Error(`Failed to generate SPIR-V bytecode for ${name}.comp`);
+            }
+            fs.writeFileSync(spvPath, Buffer.from(spv.buffer, spv.byteOffset, spv.byteLength));
+            console.log(`Saved -> ${spvPath} (${spv.length * 4} bytes)`);
+        } catch (compileErr) {
+            console.error(`Compilation error in ${name}.comp:`, compileErr);
+            process.exit(1);
+        }
     }
     console.log('All shaders compiled successfully!');
 }
 
-main().catch(console.error);
+main().catch(err => {
+    console.error('Fatal shader build error:', err);
+    process.exit(1);
+});
