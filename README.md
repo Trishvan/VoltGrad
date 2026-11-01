@@ -12,23 +12,25 @@ VoltGrad brings **adaptive, vendor-neutral GPU computing** to Go without proprie
 
 ## 📁 Architecture Overview
 
-All code lives in this standalone folder `voltgrad/` with **zero external dependencies** (pure Go standard library + Vulkan C-ABI):
+All code lives in this standalone folder `voltgrad/` with **zero CGO** (pure Go standard library + Vulkan C-ABI dynamic loading):
 
 | File | Purpose |
 | :--- | :--- |
 | [`tensor.go`](voltgrad/tensor.go) | `DynamicBitTensor` with mandatory Dynamic Bit Widening ($W \in [2, 64]$ bits), bit-packing, zero quantization clipping. |
+| [`persistent_tensor.go`](voltgrad/persistent_tensor.go) | `PersistentGpuTensor` maintaining resident weights, bias, and velocity states in GPU memory across iterations. |
 | [`model.go`](voltgrad/model.go) | `ModelArchitecture` & `BatchedModelArchitecture` interfaces, `ComputeLoss` (MSE, Cross-Entropy, Brier). |
-| [`hardware.go`](voltgrad/hardware.go) | Direct Vulkan GPU discovery, logical device initialization, host-coherent memory mapping, and `DeviceReport`. |
+| [`hardware.go`](voltgrad/hardware.go) | Direct Vulkan GPU discovery, logical device initialization, host-coherent memory mapping, bounds-checked `GpuBuffer`, and `DeviceReport`. |
 | [`buffer_pool.go`](voltgrad/buffer_pool.go) | Zero-allocation power-of-two capacity bucketing for Vulkan host-coherent storage buffers. |
-| [`kernel.go`](voltgrad/kernel.go) | Generic SPIR-V compute kernel manager with arbitrary storage buffer descriptor sets and push constants. |
+| [`kernel.go`](voltgrad/kernel.go) | Generic SPIR-V compute kernel manager with asynchronous dispatch (`DispatchAsync`), `ExecutionToken`, and GPU timestamp profiling (`DispatchProfiled`). |
 | [`gpu_engine.go`](voltgrad/gpu_engine.go) | Coordinates GPU Batched MatMul, Backpropagation, GPU Activations (ReLU), GPU Loss (MSE), and DBW Optimizer. |
 | [`pipeline.go`](voltgrad/pipeline.go) | Vulkan compute shader compilation, pipeline layouts, push constants, and dispatch execution. |
 | [`optimizer.go`](voltgrad/optimizer.go) | `DynamicBitOptimizer` implementing $w(t+1) = w(t) - \lfloor \eta \cdot g / 2^{Q_f} \rfloor$ on GPU/CPU with DBW auto-widening. |
-| [`layers.go`](voltgrad/layers.go) | Reusable building blocks (`LinearLayer`, MatMul, Batched GEMM) with GPU and CPU forward/backward differentiation. |
+| [`layers.go`](voltgrad/layers.go) | Reusable building blocks (`LinearLayer`, MatMul, Batched GEMM) with persistent GPU binding (`BindGPU`, `SyncToHost`). |
 | [`ops.go`](voltgrad/ops.go) | Fixed-point integer operations (MatMulVec64, Softmax, ReLU, activation backward passes). |
 | [`trainer.go`](voltgrad/trainer.go) | `VulkanTrainingPipeline` coordinating training epochs, batched GEMM dispatch, and DBW logging. |
 | [`vulkan_loader_windows.go`](voltgrad/vulkan_loader_windows.go) / [`_unix.go`](voltgrad/vulkan_loader_unix.go) | Zero-CGO cross-platform dynamic Vulkan loader for Windows (`vulkan-1.dll`), Linux (`libvulkan.so`), and macOS (`libvulkan.dylib`). |
-| [`gpu_performance_test.go`](voltgrad/gpu_performance_test.go) | Performance and parity suite for Batched GEMM, GPU Activations, MSE Loss, and Device Telemetry. |
+| [`benchmark_test.go`](voltgrad/benchmark_test.go) | Standard Go benchmarks measuring CPU MatMul, GPU MatMul, Batched GEMM, and Persistent Tensor synchronization. |
+| [`gpu_performance_test.go`](voltgrad/gpu_performance_test.go) | Performance and parity suite for Batched GEMM, GPU Activations, MSE Loss, Asynchronous Dispatch, and Profiling. |
 | [`shaders/`](voltgrad/shaders/) | GLSL compute shader sources (GEMM forward/backward, batched GEMM, ReLU, Loss, DBW repack, Optimizer), compiled SPIR-V bytecode, and build scripts. |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records, including [ADR-0001: Tensor-Wise DBW](docs/adr/0001-tensor-wise-dynamic-bit-widening.md). |
 
@@ -194,11 +196,11 @@ VoltGrad adheres to strict open-source design principles formalized in our Archi
 
 ### VoltGrad 0.3 — GPU performance (Priority 2)
 - [x] Batched GEMM (`MatMulBatchedForward`, `MatMulBatchedBackward`, `BatchedModelArchitecture`).
-- [x] Persistent GPU allocations.
-- [x] Buffer pooling (`BufferPool` with power-of-two capacity bucketing).
-- [x] Asynchronous command execution.
+- [x] Persistent GPU allocations (`PersistentGpuTensor` maintaining resident weights & velocities across epochs).
+- [x] Buffer pooling (`BufferPool` with power-of-two capacity bucketing for temporary IO buffers).
+- [x] Asynchronous command execution (`DispatchAsync` returning `ExecutionToken` with non-blocking submission).
 - [x] GPU activation and reduction kernels (`ReLUForward`, `ReLUBackward`, `MSELoss`).
-- [x] GPU profiling and timestamps (structured execution telemetry and hardware reporting).
+- [x] GPU profiling and timestamps (`DispatchProfiled` with Vulkan GPU timestamp queries).
 
 ### VoltGrad 0.4 — Adaptive computing
 - [x] Tensor-wise DBW architectural standardization ([ADR-0001](docs/adr/0001-tensor-wise-dynamic-bit-widening.md)).

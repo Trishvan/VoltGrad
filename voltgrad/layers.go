@@ -2,14 +2,16 @@ package voltgrad
 
 // LinearLayer provides a standard parameterized fully-connected layer with weights and optional bias.
 type LinearLayer struct {
-	Name    string
-	InDim   int
-	OutDim  int
-	Weight  *DynamicBitTensor // Shape: [OutDim, InDim]
-	GradW   *DynamicBitTensor
-	Bias    *DynamicBitTensor // Shape: [OutDim]
-	GradBias *DynamicBitTensor
-	UseBias bool
+	Name      string
+	InDim     int
+	OutDim    int
+	Weight    *DynamicBitTensor // Shape: [OutDim, InDim]
+	GradW     *DynamicBitTensor
+	Bias      *DynamicBitTensor // Shape: [OutDim]
+	GradBias  *DynamicBitTensor
+	UseBias   bool
+	GpuWeight *PersistentGpuTensor
+	GpuBias   *PersistentGpuTensor
 }
 
 // NewLinearLayer creates a linear layer starting with initialBits (e.g. 2 bits).
@@ -146,5 +148,52 @@ func (l *LinearLayer) InitWeightsIdentity(scale int32) {
 				l.Weight.SetInt32(idx, 0)
 			}
 		}
+	}
+}
+
+// BindGPU allocates and binds persistent GPU buffers for the layer's weights and biases.
+func (l *LinearLayer) BindGPU(hw *HardwareContext) error {
+	pw, err := NewPersistentGpuTensor(hw, l.Weight)
+	if err != nil {
+		return err
+	}
+	l.GpuWeight = pw
+
+	if l.UseBias && l.Bias != nil {
+		pb, err := NewPersistentGpuTensor(hw, l.Bias)
+		if err != nil {
+			pw.Free()
+			l.GpuWeight = nil
+			return err
+		}
+		l.GpuBias = pb
+	}
+	return nil
+}
+
+// SyncToHost synchronizes resident GPU weights and biases back into CPU memory.
+func (l *LinearLayer) SyncToHost() error {
+	if l.GpuWeight != nil {
+		if err := l.GpuWeight.SyncToHost(); err != nil {
+			return err
+		}
+	}
+	if l.GpuBias != nil {
+		if err := l.GpuBias.SyncToHost(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// FreeGPU releases all persistent GPU tensor allocations for this layer.
+func (l *LinearLayer) FreeGPU() {
+	if l.GpuWeight != nil {
+		l.GpuWeight.Free()
+		l.GpuWeight = nil
+	}
+	if l.GpuBias != nil {
+		l.GpuBias.Free()
+		l.GpuBias = nil
 	}
 }

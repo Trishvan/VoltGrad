@@ -177,8 +177,7 @@ func (e *GpuEngine) MatMulForward(w *DynamicBitTensor, x []int32, bias *DynamicB
 		return nil, fmt.Errorf("GPU MatMulForward dispatch failed: %w", err)
 	}
 
-	out := bufY.ReadInt32(outDim)
-	return out, nil
+	return bufY.ReadInt32(outDim)
 }
 
 // MatMulBatchedForward executes Y[B, outDim] = (X[B, inDim] * W^T) >> shift + bias on the GPU.
@@ -261,8 +260,7 @@ func (e *GpuEngine) MatMulBatchedForward(w *DynamicBitTensor, x []int32, batchSi
 		return nil, fmt.Errorf("GPU MatMulBatchedForward dispatch failed: %w", err)
 	}
 
-	out := bufY.ReadInt32(totalOut)
-	return out, nil
+	return bufY.ReadInt32(totalOut)
 }
 
 // MatMulBackward executes dX = (W^T * dOut) >> shift and accumulates dW on the GPU.
@@ -327,7 +325,10 @@ func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor,
 	if err := e.kernelMatMulBwdDx.Dispatch(buffersDx, unsafe.Pointer(&pushDx[0]), 16, wgDx); err != nil {
 		return nil, fmt.Errorf("GPU MatMulBackward dX dispatch failed: %w", err)
 	}
-	dX := bufDX.ReadInt32(inDim)
+	dX, err := bufDX.ReadInt32(inDim)
+	if err != nil {
+		return nil, err
+	}
 
 	// 2. Accumulate dW and dBias on GPU
 	bufX, err := e.hw.GetPooledBuffer(uint64(len(x) * 4))
@@ -335,7 +336,9 @@ func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor,
 		return nil, err
 	}
 	defer bufX.Release()
-	bufX.WriteInt32(x)
+	if err := bufX.WriteInt32(x); err != nil {
+		return nil, err
+	}
 
 	gradWSlice := gradW.ToInt64Slice()
 	bufGradW, err := e.hw.GetPooledBuffer(uint64(len(gradWSlice) * 8))
@@ -343,7 +346,9 @@ func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor,
 		return nil, err
 	}
 	defer bufGradW.Release()
-	bufGradW.WriteInt64(gradWSlice)
+	if err := bufGradW.WriteInt64(gradWSlice); err != nil {
+		return nil, err
+	}
 
 	useBias := uint32(0)
 	var bufGradBias *GpuBuffer
@@ -356,7 +361,9 @@ func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor,
 			return nil, err
 		}
 		defer bufGradBias.Release()
-		bufGradBias.WriteInt64(gradBiasSlice)
+		if err := bufGradBias.WriteInt64(gradBiasSlice); err != nil {
+			return nil, err
+		}
 	} else {
 		bufGradBias, err = e.hw.GetPooledBuffer(8)
 		if err != nil {
@@ -378,9 +385,17 @@ func (e *GpuEngine) MatMulBackward(dOut []int32, x []int32, w *DynamicBitTensor,
 		return nil, fmt.Errorf("GPU MatMulBackward dW dispatch failed: %w", err)
 	}
 
-	gradW.FromInt64Slice(bufGradW.ReadInt64(len(gradWSlice)))
+	readGradW, err := bufGradW.ReadInt64(len(gradWSlice))
+	if err != nil {
+		return nil, err
+	}
+	gradW.FromInt64Slice(readGradW)
 	if gradBias != nil {
-		gradBias.FromInt64Slice(bufGradBias.ReadInt64(len(gradBiasSlice)))
+		readGradBias, err := bufGradBias.ReadInt64(len(gradBiasSlice))
+		if err != nil {
+			return nil, err
+		}
+		gradBias.FromInt64Slice(readGradBias)
 	}
 
 	return dX, nil
@@ -455,7 +470,10 @@ func (e *GpuEngine) MatMulBatchedBackward(dOut []int32, x []int32, batchSize int
 	if err := e.kernelMatMulBatchedBwdDx.Dispatch(buffersDx, unsafe.Pointer(&pushDx[0]), 20, wgDx); err != nil {
 		return nil, fmt.Errorf("GPU MatMulBatchedBackward dX dispatch failed: %w", err)
 	}
-	dX := bufDX.ReadInt32(totalDX)
+	dX, err := bufDX.ReadInt32(totalDX)
+	if err != nil {
+		return nil, err
+	}
 
 	// 2. Accumulate dW and dBias on GPU
 	bufX, err := e.hw.GetPooledBuffer(uint64(len(x) * 4))
@@ -463,7 +481,9 @@ func (e *GpuEngine) MatMulBatchedBackward(dOut []int32, x []int32, batchSize int
 		return nil, err
 	}
 	defer bufX.Release()
-	bufX.WriteInt32(x)
+	if err := bufX.WriteInt32(x); err != nil {
+		return nil, err
+	}
 
 	gradWSlice := gradW.ToInt64Slice()
 	bufGradW, err := e.hw.GetPooledBuffer(uint64(len(gradWSlice) * 8))
@@ -471,7 +491,9 @@ func (e *GpuEngine) MatMulBatchedBackward(dOut []int32, x []int32, batchSize int
 		return nil, err
 	}
 	defer bufGradW.Release()
-	bufGradW.WriteInt64(gradWSlice)
+	if err := bufGradW.WriteInt64(gradWSlice); err != nil {
+		return nil, err
+	}
 
 	useBias := uint32(0)
 	var bufGradBias *GpuBuffer
@@ -484,7 +506,9 @@ func (e *GpuEngine) MatMulBatchedBackward(dOut []int32, x []int32, batchSize int
 			return nil, err
 		}
 		defer bufGradBias.Release()
-		bufGradBias.WriteInt64(gradBiasSlice)
+		if err := bufGradBias.WriteInt64(gradBiasSlice); err != nil {
+			return nil, err
+		}
 	} else {
 		bufGradBias, err = e.hw.GetPooledBuffer(8)
 		if err != nil {
@@ -507,9 +531,17 @@ func (e *GpuEngine) MatMulBatchedBackward(dOut []int32, x []int32, batchSize int
 		return nil, fmt.Errorf("GPU MatMulBatchedBackward dW dispatch failed: %w", err)
 	}
 
-	gradW.FromInt64Slice(bufGradW.ReadInt64(len(gradWSlice)))
+	readGradW, err := bufGradW.ReadInt64(len(gradWSlice))
+	if err != nil {
+		return nil, err
+	}
+	gradW.FromInt64Slice(readGradW)
 	if gradBias != nil {
-		gradBias.FromInt64Slice(bufGradBias.ReadInt64(len(gradBiasSlice)))
+		readGradBias, err := bufGradBias.ReadInt64(len(gradBiasSlice))
+		if err != nil {
+			return nil, err
+		}
+		gradBias.FromInt64Slice(readGradBias)
 	}
 
 	return dX, nil
@@ -527,7 +559,9 @@ func (e *GpuEngine) ReLUForward(x []int32) ([]int32, error) {
 		return nil, err
 	}
 	defer bufX.Release()
-	bufX.WriteInt32(x)
+	if err := bufX.WriteInt32(x); err != nil {
+		return nil, err
+	}
 
 	bufY, err := e.hw.GetPooledBuffer(uint64(n * 4))
 	if err != nil {
@@ -542,7 +576,7 @@ func (e *GpuEngine) ReLUForward(x []int32) ([]int32, error) {
 		return nil, fmt.Errorf("GPU ReLUForward dispatch failed: %w", err)
 	}
 
-	return bufY.ReadInt32(n), nil
+	return bufY.ReadInt32(n)
 }
 
 // ReLUBackward computes element-wise ReLU gradient: dX[i] = (X[i] > 0 ? dOut[i] : 0) on the GPU.
@@ -560,14 +594,18 @@ func (e *GpuEngine) ReLUBackward(dOut []int32, x []int32) ([]int32, error) {
 		return nil, err
 	}
 	defer bufDOut.Release()
-	bufDOut.WriteInt32(dOut)
+	if err := bufDOut.WriteInt32(dOut); err != nil {
+		return nil, err
+	}
 
 	bufX, err := e.hw.GetPooledBuffer(uint64(n * 4))
 	if err != nil {
 		return nil, err
 	}
 	defer bufX.Release()
-	bufX.WriteInt32(x)
+	if err := bufX.WriteInt32(x); err != nil {
+		return nil, err
+	}
 
 	bufDX, err := e.hw.GetPooledBuffer(uint64(n * 4))
 	if err != nil {
@@ -582,7 +620,7 @@ func (e *GpuEngine) ReLUBackward(dOut []int32, x []int32) ([]int32, error) {
 		return nil, fmt.Errorf("GPU ReLUBackward dispatch failed: %w", err)
 	}
 
-	return bufDX.ReadInt32(n), nil
+	return bufDX.ReadInt32(n)
 }
 
 // MSELoss computes mean squared error loss and error gradient on the GPU.
@@ -600,14 +638,18 @@ func (e *GpuEngine) MSELoss(preds, targets []int32, shift uint) (int32, []int32,
 		return 0, nil, err
 	}
 	defer bufPreds.Release()
-	bufPreds.WriteInt32(preds)
+	if err := bufPreds.WriteInt32(preds); err != nil {
+		return 0, nil, err
+	}
 
 	bufTargets, err := e.hw.GetPooledBuffer(uint64(n * 4))
 	if err != nil {
 		return 0, nil, err
 	}
 	defer bufTargets.Release()
-	bufTargets.WriteInt32(targets)
+	if err := bufTargets.WriteInt32(targets); err != nil {
+		return 0, nil, err
+	}
 
 	bufGrad, err := e.hw.GetPooledBuffer(uint64(n * 4))
 	if err != nil {
@@ -628,8 +670,14 @@ func (e *GpuEngine) MSELoss(preds, targets []int32, shift uint) (int32, []int32,
 		return 0, nil, fmt.Errorf("GPU MSELoss dispatch failed: %w", err)
 	}
 
-	grad := bufGrad.ReadInt32(n)
-	losses := bufLoss.ReadInt64(n)
+	grad, err := bufGrad.ReadInt32(n)
+	if err != nil {
+		return 0, nil, err
+	}
+	losses, err := bufLoss.ReadInt64(n)
+	if err != nil {
+		return 0, nil, err
+	}
 	var totalLoss int64
 	for _, l := range losses {
 		totalLoss += l
@@ -666,21 +714,27 @@ func (e *GpuEngine) OptimizerStep(p *DynamicBitTensor, g *DynamicBitTensor, v *D
 		return p.BitWidth(), err
 	}
 	defer bufWeights.Release()
-	bufWeights.WriteInt64(wSlice)
+	if err := bufWeights.WriteInt64(wSlice); err != nil {
+		return p.BitWidth(), err
+	}
 
 	bufGrads, err := e.hw.GetPooledBuffer(uint64(count * 8))
 	if err != nil {
 		return p.BitWidth(), err
 	}
 	defer bufGrads.Release()
-	bufGrads.WriteInt64(gSlice)
+	if err := bufGrads.WriteInt64(gSlice); err != nil {
+		return p.BitWidth(), err
+	}
 
 	bufVels, err := e.hw.GetPooledBuffer(uint64(count * 8))
 	if err != nil {
 		return p.BitWidth(), err
 	}
 	defer bufVels.Release()
-	bufVels.WriteInt64(vSlice)
+	if err := bufVels.WriteInt64(vSlice); err != nil {
+		return p.BitWidth(), err
+	}
 
 	// meta[0] initialized to current bit width
 	bufMeta, err := e.hw.GetPooledBuffer(4)
@@ -688,7 +742,9 @@ func (e *GpuEngine) OptimizerStep(p *DynamicBitTensor, g *DynamicBitTensor, v *D
 		return p.BitWidth(), err
 	}
 	defer bufMeta.Release()
-	bufMeta.WriteUint32([]uint32{uint32(p.BitWidth())})
+	if err := bufMeta.WriteUint32([]uint32{uint32(p.BitWidth())}); err != nil {
+		return p.BitWidth(), err
+	}
 
 	optType := uint32(config.Type)
 	pushOpt := [6]int32{
@@ -707,15 +763,24 @@ func (e *GpuEngine) OptimizerStep(p *DynamicBitTensor, g *DynamicBitTensor, v *D
 	}
 
 	// Read updated state back from GPU into Go memory
-	newV := bufVels.ReadInt64(count)
+	newV, err := bufVels.ReadInt64(count)
+	if err != nil {
+		return p.BitWidth(), err
+	}
 	v.FromInt64Slice(newV)
 
-	newWeights := bufWeights.ReadInt64(count)
+	newWeights, err := bufWeights.ReadInt64(count)
+	if err != nil {
+		return p.BitWidth(), err
+	}
 	p.FromInt64Slice(newWeights)
 
 	// Check if DBW auto-widening occurred on the GPU
-	metaResult := bufMeta.ReadUint32(1)[0]
-	targetBitWidth := int(metaResult)
+	metaSlice, err := bufMeta.ReadUint32(1)
+	if err != nil {
+		return p.BitWidth(), err
+	}
+	targetBitWidth := int(metaSlice[0])
 	if targetBitWidth < p.BitWidth() {
 		targetBitWidth = p.BitWidth()
 	}
@@ -747,7 +812,10 @@ func (e *GpuEngine) OptimizerStep(p *DynamicBitTensor, g *DynamicBitTensor, v *D
 	}
 
 	// Update tensor packed representation
-	packedWords := bufPacked.ReadUint32(numWords)
+	packedWords, err := bufPacked.ReadUint32(numWords)
+	if err != nil {
+		return p.BitWidth(), err
+	}
 	p.SetWords(packedWords, targetBitWidth)
 
 	return targetBitWidth, nil

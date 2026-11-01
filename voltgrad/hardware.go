@@ -440,64 +440,118 @@ func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, err
 	}, nil
 }
 
-// WriteInt32 uploads an int32 slice directly into host-coherent GPU mapped memory.
-func (b *GpuBuffer) WriteInt32(data []int32) {
+// WriteInt32 uploads an int32 slice directly into host-coherent GPU mapped memory with strict bounds checking.
+func (b *GpuBuffer) WriteInt32(data []int32) error {
 	if len(data) == 0 {
-		return
+		return nil
+	}
+	if b.mapped == nil {
+		return errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	reqBytes := len(data) * 4
+	if uint64(reqBytes) > b.capacity {
+		return fmt.Errorf("buffer overflow: writing %d int32 elements (%d bytes) exceeds buffer capacity of %d bytes", len(data), reqBytes, b.capacity)
 	}
 	dst := unsafe.Slice((*int32)(b.mapped), len(data))
 	copy(dst, data)
+	return nil
 }
 
-// WriteUint32 uploads a uint32 slice directly into host-coherent GPU mapped memory.
-func (b *GpuBuffer) WriteUint32(data []uint32) {
+// WriteUint32 uploads a uint32 slice directly into host-coherent GPU mapped memory with strict bounds checking.
+func (b *GpuBuffer) WriteUint32(data []uint32) error {
 	if len(data) == 0 {
-		return
+		return nil
+	}
+	if b.mapped == nil {
+		return errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	reqBytes := len(data) * 4
+	if uint64(reqBytes) > b.capacity {
+		return fmt.Errorf("buffer overflow: writing %d uint32 elements (%d bytes) exceeds buffer capacity of %d bytes", len(data), reqBytes, b.capacity)
 	}
 	dst := unsafe.Slice((*uint32)(b.mapped), len(data))
 	copy(dst, data)
+	return nil
 }
 
-// WriteInt64 uploads an int64 slice directly into host-coherent GPU mapped memory.
-func (b *GpuBuffer) WriteInt64(data []int64) {
+// WriteInt64 uploads an int64 slice directly into host-coherent GPU mapped memory with strict bounds checking.
+func (b *GpuBuffer) WriteInt64(data []int64) error {
 	if len(data) == 0 {
-		return
+		return nil
+	}
+	if b.mapped == nil {
+		return errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	reqBytes := len(data) * 8
+	if uint64(reqBytes) > b.capacity {
+		return fmt.Errorf("buffer overflow: writing %d int64 elements (%d bytes) exceeds buffer capacity of %d bytes", len(data), reqBytes, b.capacity)
 	}
 	dst := unsafe.Slice((*int64)(b.mapped), len(data))
 	copy(dst, data)
+	return nil
 }
 
-// ReadInt32 reads back a copy of int32 elements into Go-owned memory.
-func (b *GpuBuffer) ReadInt32(count int) []int32 {
+// ReadInt32 reads back a copy of int32 elements into Go-owned memory with strict bounds checking.
+func (b *GpuBuffer) ReadInt32(count int) ([]int32, error) {
+	if count < 0 {
+		return nil, fmt.Errorf("invalid read count: %d (must be non-negative)", count)
+	}
 	if count == 0 {
-		return nil
+		return nil, nil
+	}
+	if b.mapped == nil {
+		return nil, errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	reqBytes := count * 4
+	if uint64(reqBytes) > b.capacity {
+		return nil, fmt.Errorf("buffer read bounds error: reading %d int32 elements (%d bytes) exceeds buffer capacity of %d bytes", count, reqBytes, b.capacity)
 	}
 	src := unsafe.Slice((*int32)(b.mapped), count)
 	out := make([]int32, count)
 	copy(out, src)
-	return out
+	return out, nil
 }
 
-// ReadUint32 reads back a copy of uint32 elements into Go-owned memory.
-func (b *GpuBuffer) ReadUint32(count int) []uint32 {
+// ReadUint32 reads back a copy of uint32 elements into Go-owned memory with strict bounds checking.
+func (b *GpuBuffer) ReadUint32(count int) ([]uint32, error) {
+	if count < 0 {
+		return nil, fmt.Errorf("invalid read count: %d (must be non-negative)", count)
+	}
 	if count == 0 {
-		return nil
+		return nil, nil
+	}
+	if b.mapped == nil {
+		return nil, errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	reqBytes := count * 4
+	if uint64(reqBytes) > b.capacity {
+		return nil, fmt.Errorf("buffer read bounds error: reading %d uint32 elements (%d bytes) exceeds buffer capacity of %d bytes", count, reqBytes, b.capacity)
 	}
 	src := unsafe.Slice((*uint32)(b.mapped), count)
 	out := make([]uint32, count)
 	copy(out, src)
-	return out
+	return out, nil
 }
 
-// ReadInt64 reads back a copy of int64 elements into Go-owned memory.
-func (b *GpuBuffer) ReadInt64(count int) []int64 {
+// ReadInt64 reads back a copy of int64 elements into Go-owned memory with strict bounds checking.
+func (b *GpuBuffer) ReadInt64(count int) ([]int64, error) {
+	if count < 0 {
+		return nil, fmt.Errorf("invalid read count: %d (must be non-negative)", count)
+	}
 	if count == 0 {
-		return nil
+		return nil, nil
+	}
+	if b.mapped == nil {
+		return nil, errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	reqBytes := count * 8
+	if uint64(reqBytes) > b.capacity {
+		return nil, fmt.Errorf("buffer read bounds error: reading %d int64 elements (%d bytes) exceeds buffer capacity of %d bytes", count, reqBytes, b.capacity)
 	}
 	src := unsafe.Slice((*int64)(b.mapped), count)
 	out := make([]int64, count)
 	copy(out, src)
-	return out
+	return out, nil
 }
 
 // Clear zeroes out the entire buffer capacity.

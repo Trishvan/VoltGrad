@@ -609,7 +609,10 @@ func TestRandomizedDBWRepackParity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateHostCoherentBuffer failed: %v", err)
 		}
-		bufWeights.WriteInt64(values)
+		if err := bufWeights.WriteInt64(values); err != nil {
+			bufWeights.Free()
+			t.Fatalf("WriteInt64 failed: %v", err)
+		}
 
 		totalBits := count * w
 		numWords := (totalBits + 31) / 32
@@ -631,7 +634,12 @@ func TestRandomizedDBWRepackParity(t *testing.T) {
 			t.Fatalf("Width %d repack dispatch failed: %v", w, err)
 		}
 
-		gpuWords := bufPacked.ReadUint32(numWords)
+		gpuWords, err := bufPacked.ReadUint32(numWords)
+		if err != nil {
+			bufWeights.Free()
+			bufPacked.Free()
+			t.Fatalf("ReadUint32 failed: %v", err)
+		}
 		bufWeights.Free()
 		bufPacked.Free()
 

@@ -285,7 +285,7 @@ func (p *Pipeline) Dispatch(inputPairs []int32, pushParam int32) ([]int32, error
 	}
 
 	// Read outputs directly from host-coherent mapped memory
-	return p.outputBuffer.ReadInt32(count), nil
+	return p.outputBuffer.ReadInt32(count)
 }
 
 // Close releases all pipeline resources and descriptors.

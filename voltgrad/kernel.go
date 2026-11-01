@@ -3,6 +3,7 @@ package voltgrad
 import (
 	_ "embed"
 	"fmt"
+	"time"
 	"unsafe"
 )
 
@@ -51,6 +52,7 @@ type ComputeKernel struct {
 	cmdPool      uint64
 	cmdBuf       uintptr
 	fence        uint64
+	queryPool    uint64
 	numBindings  int
 	pushSize     uint32
 }
@@ -231,6 +233,24 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		return nil, fmt.Errorf("vkCreateFence failed: %d", r)
 	}
 
+	var queryPool uint64
+	createQP := hw.getProc("vkCreateQueryPool")
+	if createQP != 0 {
+		qpCI := struct {
+			SType              uint32
+			PNext              uintptr
+			Flags              uint32
+			QueryType          uint32
+			QueryCount         uint32
+			PipelineStatistics uint32
+		}{
+			SType:      12, // VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO
+			QueryType:  2,  // VK_QUERY_TYPE_TIMESTAMP
+			QueryCount: 2,
+		}
+		vkSyscall(createQP, hw.device, uintptr(unsafe.Pointer(&qpCI)), 0, uintptr(unsafe.Pointer(&queryPool)))
+	}
+
 	return &ComputeKernel{
 		hw:           hw,
 		shaderModule: shaderModule,
@@ -242,15 +262,32 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 		cmdPool:      cmdPool,
 		cmdBuf:       cmdBuf,
 		fence:        fence,
+		queryPool:    queryPool,
 		numBindings:  numBindings,
 		pushSize:     pushSize,
 	}, nil
 }
 
-// Dispatch executes the compute shader across the given storage buffers with push constants.
-func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) error {
+// ExecutionToken represents an in-flight asynchronous GPU compute submission.
+type ExecutionToken struct {
+	kernel *ComputeKernel
+}
+
+// Wait blocks until the asynchronous GPU compute operation completes or the timeout expires.
+// Pass timeoutNs in nanoseconds (e.g. 2_000_000_000 for 2 seconds).
+func (t *ExecutionToken) Wait(timeoutNs uint64) error {
+	r := vkSyscall(t.kernel.hw.getProc("vkWaitForFences"), t.kernel.hw.device, 1, uintptr(unsafe.Pointer(&t.kernel.fence)), 1, uintptr(timeoutNs))
+	if r != 0 {
+		return fmt.Errorf("GPU compute execution failed or timed out: %d", r)
+	}
+	return nil
+}
+
+// DispatchAsync records and submits the compute dispatch asynchronously to the GPU compute queue,
+// returning an ExecutionToken without blocking the CPU thread.
+func (k *ComputeKernel) DispatchAsync(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) (*ExecutionToken, error) {
 	if len(buffers) != k.numBindings {
-		return fmt.Errorf("kernel requires %d buffers, got %d", k.numBindings, len(buffers))
+		return nil, fmt.Errorf("kernel requires %d buffers, got %d", k.numBindings, len(buffers))
 	}
 	if workgroups == 0 {
 		workgroups = 1
@@ -279,7 +316,7 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 	// Reset fence
 	r := vkSyscall(k.hw.getProc("vkResetFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)))
 	if r != 0 {
-		return fmt.Errorf("vkResetFences failed: %d", r)
+		return nil, fmt.Errorf("vkResetFences failed: %d", r)
 	}
 
 	// Record command buffer
@@ -289,7 +326,7 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 	}
 	r = vkSyscall(k.hw.getProc("vkBeginCommandBuffer"), k.cmdBuf, uintptr(unsafe.Pointer(&beginInfo)))
 	if r != 0 {
-		return fmt.Errorf("vkBeginCommandBuffer failed: %d", r)
+		return nil, fmt.Errorf("vkBeginCommandBuffer failed: %d", r)
 	}
 
 	vkSyscall(k.hw.getProc("vkCmdBindPipeline"), k.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(k.pipeline))
@@ -302,7 +339,7 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 	vkSyscall(k.hw.getProc("vkCmdDispatch"), k.cmdBuf, uintptr(workgroups), 1, 1)
 	r = vkSyscall(k.hw.getProc("vkEndCommandBuffer"), k.cmdBuf)
 	if r != 0 {
-		return fmt.Errorf("vkEndCommandBuffer failed: %d", r)
+		return nil, fmt.Errorf("vkEndCommandBuffer failed: %d", r)
 	}
 
 	submitInfo := VkSubmitInfo{
@@ -312,19 +349,127 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 	}
 	r = vkSyscall(k.hw.getProc("vkQueueSubmit"), k.hw.queue, 1, uintptr(unsafe.Pointer(&submitInfo)), uintptr(k.fence))
 	if r != 0 {
-		return fmt.Errorf("vkQueueSubmit failed: %d", r)
+		return nil, fmt.Errorf("vkQueueSubmit failed: %d", r)
 	}
 
-	// Wait for GPU fence (2-second timeout)
-	r = vkSyscall(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(2000000000))
-	if r != 0 {
-		return fmt.Errorf("GPU compute execution failed or timed out: %d", r)
+	return &ExecutionToken{kernel: k}, nil
+}
+
+// Dispatch synchronously executes the compute shader across the given storage buffers with push constants.
+func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) error {
+	token, err := k.DispatchAsync(buffers, pushData, pushSize, workgroups)
+	if err != nil {
+		return err
 	}
-	return nil
+	return token.Wait(2000000000)
+}
+
+// DispatchProfiled executes the compute shader and returns the execution duration.
+// It leverages Vulkan GPU query pools when supported, with fallback to high-precision timers.
+func (k *ComputeKernel) DispatchProfiled(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) (time.Duration, error) {
+	if k.queryPool != 0 {
+		cmdResetQP := k.hw.getProc("vkCmdResetQueryPool")
+		cmdWriteTS := k.hw.getProc("vkCmdWriteTimestamp")
+		getQPResults := k.hw.getProc("vkGetQueryPoolResults")
+
+		if cmdResetQP != 0 && cmdWriteTS != 0 && getQPResults != 0 {
+			if len(buffers) != k.numBindings {
+				return 0, fmt.Errorf("kernel requires %d buffers, got %d", k.numBindings, len(buffers))
+			}
+			if workgroups == 0 {
+				workgroups = 1
+			}
+
+			writes := make([]VkWriteDescriptorSet, k.numBindings)
+			bufInfos := make([]VkDescriptorBufferInfo, k.numBindings)
+			for i, b := range buffers {
+				bufInfos[i] = VkDescriptorBufferInfo{Buffer: b.buffer, Offset: 0, Range: b.size}
+				writes[i] = VkWriteDescriptorSet{
+					SType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					DstSet:          k.descSet,
+					DstBinding:      uint32(i),
+					DescriptorCount: 1,
+					DescriptorType:  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+					PBufferInfo:     &bufInfos[i],
+				}
+			}
+			vkSyscall(k.hw.getProc("vkUpdateDescriptorSets"), k.hw.device, uintptr(k.numBindings), uintptr(unsafe.Pointer(&writes[0])), 0, 0)
+
+			r := vkSyscall(k.hw.getProc("vkResetFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)))
+			if r != 0 {
+				return 0, fmt.Errorf("vkResetFences failed: %d", r)
+			}
+
+			beginInfo := VkCommandBufferBeginInfo{
+				SType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+				Flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+			}
+			r = vkSyscall(k.hw.getProc("vkBeginCommandBuffer"), k.cmdBuf, uintptr(unsafe.Pointer(&beginInfo)))
+			if r != 0 {
+				return 0, fmt.Errorf("vkBeginCommandBuffer failed: %d", r)
+			}
+
+			vkSyscall(cmdResetQP, k.cmdBuf, uintptr(k.queryPool), 0, 2)
+			vkSyscall(cmdWriteTS, k.cmdBuf, uintptr(1 /* TOP_OF_PIPE */), uintptr(k.queryPool), 0)
+
+			vkSyscall(k.hw.getProc("vkCmdBindPipeline"), k.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(k.pipeline))
+			vkSyscall(k.hw.getProc("vkCmdBindDescriptorSets"), k.cmdBuf, uintptr(VK_PIPELINE_BIND_POINT_COMPUTE), uintptr(k.pipeLayout), 0, 1, uintptr(unsafe.Pointer(&k.descSet)), 0, 0)
+			if pushData != nil && pushSize > 0 {
+				vkSyscall(k.hw.getProc("vkCmdPushConstants"), k.cmdBuf, uintptr(k.pipeLayout), uintptr(VK_SHADER_STAGE_COMPUTE_BIT), 0, uintptr(pushSize), uintptr(pushData))
+			}
+			vkSyscall(k.hw.getProc("vkCmdDispatch"), k.cmdBuf, uintptr(workgroups), 1, 1)
+
+			vkSyscall(cmdWriteTS, k.cmdBuf, uintptr(0x2000 /* BOTTOM_OF_PIPE */), uintptr(k.queryPool), 1)
+
+			r = vkSyscall(k.hw.getProc("vkEndCommandBuffer"), k.cmdBuf)
+			if r != 0 {
+				return 0, fmt.Errorf("vkEndCommandBuffer failed: %d", r)
+			}
+
+			submitInfo := VkSubmitInfo{
+				SType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+				CommandBufferCount: 1,
+				PCommandBuffers:    &k.cmdBuf,
+			}
+			r = vkSyscall(k.hw.getProc("vkQueueSubmit"), k.hw.queue, 1, uintptr(unsafe.Pointer(&submitInfo)), uintptr(k.fence))
+			if r != 0 {
+				return 0, fmt.Errorf("vkQueueSubmit failed: %d", r)
+			}
+
+			r = vkSyscall(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(2000000000))
+			if r != 0 {
+				return 0, fmt.Errorf("GPU compute execution failed or timed out: %d", r)
+			}
+
+			var timestamps [2]uint64
+			r = vkSyscall(getQPResults, k.hw.device, uintptr(k.queryPool), 0, 2, 16, uintptr(unsafe.Pointer(&timestamps[0])), 8, 1|2)
+			if r == 0 && timestamps[1] >= timestamps[0] {
+				ticks := timestamps[1] - timestamps[0]
+				return time.Duration(ticks), nil
+			}
+		}
+	}
+
+	start := time.Now()
+	token, err := k.DispatchAsync(buffers, pushData, pushSize, workgroups)
+	if err != nil {
+		return 0, err
+	}
+	if err := token.Wait(2000000000); err != nil {
+		return 0, err
+	}
+	return time.Since(start), nil
 }
 
 // Close releases all Vulkan resources associated with this kernel.
 func (k *ComputeKernel) Close() {
+	if k.queryPool != 0 {
+		destroyQP := k.hw.getProc("vkDestroyQueryPool")
+		if destroyQP != 0 {
+			vkSyscall(destroyQP, k.hw.device, uintptr(k.queryPool), 0)
+		}
+		k.queryPool = 0
+	}
 	if k.fence != 0 {
 		vkSyscall(k.hw.getProc("vkDestroyFence"), k.hw.device, uintptr(k.fence), 0)
 		k.fence = 0

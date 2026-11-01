@@ -31,8 +31,13 @@ func TestBufferPoolReuseAndClear(t *testing.T) {
 
 	// Write data to verify valid mapping
 	testData := []int32{1, 2, 3, 4}
-	buf1.WriteInt32(testData)
-	readData := buf1.ReadInt32(4)
+	if err := buf1.WriteInt32(testData); err != nil {
+		t.Fatalf("WriteInt32 failed: %v", err)
+	}
+	readData, err := buf1.ReadInt32(4)
+	if err != nil {
+		t.Fatalf("ReadInt32 failed: %v", err)
+	}
 	if readData[0] != 1 || readData[3] != 4 {
 		t.Fatalf("Data mismatch in pooled buffer: %v", readData)
 	}

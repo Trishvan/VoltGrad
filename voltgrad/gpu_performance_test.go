@@ -3,6 +3,7 @@ package voltgrad
 import (
 	"math/rand"
 	"testing"
+	"unsafe"
 )
 
 func randInt64ForBits(r *rand.Rand, bitWidth int) int64 {
@@ -304,4 +305,132 @@ func TestDeviceCapabilityReport(t *testing.T) {
 
 	reportStr := report.String()
 	t.Logf("\n=== Vulkan Device Capability Telemetry ===\n%s\n", reportStr)
+}
+
+// TestAsyncDispatchAndProfiling verifies asynchronous execution tokens and GPU profiling capabilities.
+func TestAsyncDispatchAndProfiling(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		t.Fatalf("Failed to initialize GpuEngine: %v", err)
+	}
+	defer gpu.Close()
+
+	// Create input and output buffers for ReLU kernel
+	n := 1024
+	bufX, err := hw.CreateHostCoherentBuffer(uint64(n * 4))
+	if err != nil {
+		t.Fatalf("CreateHostCoherentBuffer X failed: %v", err)
+	}
+	defer bufX.Free()
+
+	bufY, err := hw.CreateHostCoherentBuffer(uint64(n * 4))
+	if err != nil {
+		t.Fatalf("CreateHostCoherentBuffer Y failed: %v", err)
+	}
+	defer bufY.Free()
+
+	input := make([]int32, n)
+	for i := range input {
+		input[i] = int32(i - n/2)
+	}
+	if err := bufX.WriteInt32(input); err != nil {
+		t.Fatalf("WriteInt32 failed: %v", err)
+	}
+
+	push := [1]uint32{uint32(n)}
+	wg := uint32((n + 63) / 64)
+	buffers := []*GpuBuffer{bufX, bufY}
+
+	// 1. Asynchronous Dispatch
+	token, err := gpu.kernelReLUFwd.DispatchAsync(buffers, unsafe.Pointer(&push[0]), 4, wg)
+	if err != nil {
+		t.Fatalf("DispatchAsync failed: %v", err)
+	}
+	if token == nil {
+		t.Fatalf("Expected non-nil ExecutionToken")
+	}
+
+	// Wait for token completion
+	if err := token.Wait(2000000000); err != nil {
+		t.Fatalf("ExecutionToken.Wait failed: %v", err)
+	}
+
+	res, err := bufY.ReadInt32(n)
+	if err != nil {
+		t.Fatalf("ReadInt32 failed: %v", err)
+	}
+	for i, v := range res {
+		expected := int32(0)
+		if input[i] > 0 {
+			expected = input[i]
+		}
+		if v != expected {
+			t.Fatalf("Async dispatch result mismatch at %d: got %d, expected %d", i, v, expected)
+		}
+	}
+
+	// 2. Profiled Execution
+	dur, err := gpu.kernelReLUFwd.DispatchProfiled(buffers, unsafe.Pointer(&push[0]), 4, wg)
+	if err != nil {
+		t.Fatalf("DispatchProfiled failed: %v", err)
+	}
+	if dur <= 0 {
+		t.Fatalf("Expected positive execution duration from DispatchProfiled, got %v", dur)
+	}
+
+	t.Logf(">>> GPU Asynchronous Dispatch and Timestamp Profiling VERIFIED! Duration: %v <<<", dur)
+}
+
+// TestPersistentGpuTensorLifecycle validates allocation, GPU persistence, and host synchronization of resident tensors.
+func TestPersistentGpuTensorLifecycle(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer hw.Close()
+
+	layer := NewLinearLayer("fc_persistent", 8, 4, 4, true)
+	for i := 0; i < layer.Weight.Len(); i++ {
+		layer.Weight.Set(i, int64(i+1))
+	}
+	for i := 0; i < layer.Bias.Len(); i++ {
+		layer.Bias.Set(i, int64((i+1)*10))
+	}
+
+	// 1. Bind layer to GPU
+	if err := layer.BindGPU(hw); err != nil {
+		t.Fatalf("BindGPU failed: %v", err)
+	}
+	defer layer.FreeGPU()
+
+	if layer.GpuWeight == nil || layer.GpuWeight.Buffer() == nil {
+		t.Fatalf("Expected non-nil persistent GPU weight buffer")
+	}
+	if layer.GpuBias == nil || layer.GpuBias.Buffer() == nil {
+		t.Fatalf("Expected non-nil persistent GPU bias buffer")
+	}
+
+	// 2. Modify CPU tensor, sync to GPU, and read back
+	layer.Weight.Set(0, 7)
+	if err := layer.GpuWeight.SyncToGPU(); err != nil {
+		t.Fatalf("SyncToGPU failed: %v", err)
+	}
+
+	// Reset CPU memory to zero
+	layer.Weight.Set(0, 0)
+	if err := layer.SyncToHost(); err != nil {
+		t.Fatalf("SyncToHost failed: %v", err)
+	}
+
+	if val := layer.Weight.Get(0); val != 7 {
+		t.Fatalf("Expected synced weight value 7, got %d", val)
+	}
+
+	t.Log(">>> Persistent GPU Tensor Lifecycle and Host Synchronization VERIFIED! <<<")
 }
