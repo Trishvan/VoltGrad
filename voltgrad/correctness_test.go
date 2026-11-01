@@ -64,6 +64,69 @@ func Test64BitDBWCorrectness(t *testing.T) {
 	t.Log(">>> 64-bit Dynamic Bit Widening (DBW) correctness verified! <<<")
 }
 
+// TestTensorBitWidthMonotonicity validates that SetBitWidth strictly enforces monotonic widening (ADR-0001)
+// and rejects narrowing attempts without corrupting tensor values.
+func TestTensorBitWidthMonotonicity(t *testing.T) {
+	tensor := NewDynamicBitTensor([]int{5}, 16)
+	initialValues := []int64{20000, -20000, 150, -32000, 32000}
+	for i, v := range initialValues {
+		tensor.Set(i, v)
+	}
+
+	if tensor.BitWidth() != 16 {
+		t.Fatalf("Expected initial bit width 16, got %d", tensor.BitWidth())
+	}
+
+	// Attempt narrowing to 8 bits - must be rejected
+	tensor.SetBitWidth(8)
+	if tensor.BitWidth() != 16 {
+		t.Fatalf("SetBitWidth allowed narrowing to %d; expected 16", tensor.BitWidth())
+	}
+	for i, expected := range initialValues {
+		if actual := tensor.Get(i); actual != expected {
+			t.Fatalf("Narrowing attempt corrupted value at index %d: expected %d, got %d", i, expected, actual)
+		}
+	}
+
+	// Attempt identical width
+	tensor.SetBitWidth(16)
+	if tensor.BitWidth() != 16 {
+		t.Fatalf("SetBitWidth altered bit width on identical size: got %d", tensor.BitWidth())
+	}
+
+	// Attempt invalid bounds (< 2 or > 64)
+	tensor.SetBitWidth(0)
+	tensor.SetBitWidth(1)
+	tensor.SetBitWidth(70)
+	if tensor.BitWidth() != 16 {
+		t.Fatalf("SetBitWidth allowed out-of-bounds width: got %d", tensor.BitWidth())
+	}
+
+	// Valid monotonic widening to 24 bits
+	tensor.SetBitWidth(24)
+	if tensor.BitWidth() != 24 {
+		t.Fatalf("Expected widening to 24, got %d", tensor.BitWidth())
+	}
+	for i, expected := range initialValues {
+		if actual := tensor.Get(i); actual != expected {
+			t.Fatalf("Widening corrupted value at index %d: expected %d, got %d", i, expected, actual)
+		}
+	}
+
+	// Attempt narrowing again to 18 bits - must be rejected
+	tensor.SetBitWidth(18)
+	if tensor.BitWidth() != 24 {
+		t.Fatalf("SetBitWidth allowed narrowing from 24 to 18; got %d", tensor.BitWidth())
+	}
+	for i, expected := range initialValues {
+		if actual := tensor.Get(i); actual != expected {
+			t.Fatalf("Narrowing attempt corrupted value at index %d: expected %d, got %d", i, expected, actual)
+		}
+	}
+
+	t.Log(">>> Tensor Bit-Width Monotonicity (ADR-0001) successfully verified! <<<")
+}
+
 // TestOverflowAndBoundaryConditions validates edge cases across all bit widths from 2 to 64.
 func TestOverflowAndBoundaryConditions(t *testing.T) {
 	// Test each bit width representable range

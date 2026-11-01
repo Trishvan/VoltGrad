@@ -67,16 +67,13 @@ func (t *DynamicBitTensor) BitWidth() int {
 	return t.bitWidth
 }
 
-// SetBitWidth manually overrides the active bit width within [2, 64], widening if necessary.
+// SetBitWidth manually widens the active bit width within (bitWidth, 64], dynamically widening if necessary.
+// In accordance with ADR-0001, narrowing is strictly rejected to prevent bitstream decoding corruption.
 func (t *DynamicBitTensor) SetBitWidth(w int) {
-	if w < 2 || w > 64 {
+	if w <= t.bitWidth || w > 64 {
 		return
 	}
-	if w > t.bitWidth {
-		t.Widen(w)
-	} else if w < t.bitWidth {
-		t.bitWidth = w
-	}
+	t.Widen(w)
 }
 
 // SetPersistentGPU binds a persistent GPU tensor instance to this DynamicBitTensor.

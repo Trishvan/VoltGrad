@@ -36,26 +36,34 @@ func nextPowerOf2(n uint64) uint64 {
 }
 
 // Get retrieves a pooled buffer with at least the requested size, or allocates a new one.
+// Any freed or invalid buffers lingering in the pool are automatically filtered out.
 func (p *BufferPool) Get(size uint64) (*GpuBuffer, error) {
 	if size == 0 {
 		size = 4
 	}
 	capSize := nextPowerOf2(size)
 
-	p.mu.Lock()
-	list := p.pools[capSize]
-	if len(list) > 0 {
+	for {
+		p.mu.Lock()
+		list := p.pools[capSize]
+		if len(list) == 0 {
+			p.mu.Unlock()
+			break
+		}
 		buf := list[len(list)-1]
 		p.pools[capSize] = list[:len(list)-1]
 		p.mu.Unlock()
 
 		buf.mu.Lock()
+		if buf.isFreed || buf.mapped == nil {
+			buf.mu.Unlock()
+			continue
+		}
 		buf.inUse = true
 		buf.size = size
 		buf.mu.Unlock()
 		return buf, nil
 	}
-	p.mu.Unlock()
 
 	// Allocate new buffer with capSize
 	buf, err := p.hw.CreateHostCoherentBuffer(capSize)
@@ -70,22 +78,49 @@ func (p *BufferPool) Get(size uint64) (*GpuBuffer, error) {
 	return buf, nil
 }
 
-// Put returns a buffer back to the pool for reuse.
-func (p *BufferPool) Put(buf *GpuBuffer) {
-	if buf == nil || buf.mapped == nil || buf.IsFreed() {
+// removeBuffer atomically removes a buffer instance from the pool buckets.
+func (p *BufferPool) removeBuffer(buf *GpuBuffer) {
+	if p == nil || buf == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Guard against duplicate buffer insertion in the pool
 	list := p.pools[buf.capacity]
+	for i, b := range list {
+		if b == buf {
+			p.pools[buf.capacity] = append(list[:i], list[i+1:]...)
+			break
+		}
+	}
+}
+
+// Put returns a buffer back to the pool for reuse with atomic state transition validation.
+func (p *BufferPool) Put(buf *GpuBuffer) {
+	if buf == nil {
+		return
+	}
+	buf.mu.Lock()
+	if buf.isFreed || buf.mapped == nil {
+		buf.mu.Unlock()
+		return
+	}
+	buf.inUse = false
+	buf.size = 0
+	capSize := buf.capacity
+	buf.mu.Unlock()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Guard against duplicate buffer insertion in the pool
+	list := p.pools[capSize]
 	for _, existing := range list {
 		if existing == buf {
 			return
 		}
 	}
-	p.pools[buf.capacity] = append(list, buf)
+	p.pools[capSize] = append(list, buf)
 }
 
 // Clear releases all pooled GPU buffers from memory.

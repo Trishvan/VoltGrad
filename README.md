@@ -12,7 +12,7 @@ VoltGrad brings **adaptive, vendor-neutral GPU computing** to Go without proprie
 
 ## 📁 Architecture Overview
 
-All code lives in this standalone folder `voltgrad/` with **zero CGO** (pure Go standard library + Vulkan C-ABI dynamic loading):
+All code lives in this standalone folder `voltgrad/` with **zero CGO, no heavyweight native ML dependencies** (pure Go standard library + Vulkan C-ABI dynamic loading via `syscall` on Windows and `purego` on Unix/macOS):
 
 | File | Purpose |
 | :--- | :--- |
@@ -179,17 +179,36 @@ PASS
 
 Benchmarked on physical hardware (**Intel(R) Iris(R) Xe Graphics**, Vulkan 1.4.323, Driver 0.405.2989, 8074 MB VRAM, Intel Core i5-1135G7 @ 2.40GHz):
 
-| Benchmark Operation | Mode | Iterations | Time / Op | Memory / Op | Allocs / Op | Allocation Delta |
+### 1. Scaling Throughput & GPU Parallel Cross-Over
+
+Where matrix dimensions and batch sizes scale ($128 \times 128$, Batch 64/128), GPU parallel ALU compute dominates CPU execution, delivering **up to 7.6x end-to-end speedups**:
+
+| Benchmark Operation | Mode | Iterations | Time / Op | Go Heap Alloc / Op* | Allocs / Op | Relative Speedup |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Batched GEMM** ($B=64, 128 \times 128$) | CPU Reference | 31 | 46.40 ms | 66,560 B | 129 allocs | Baseline |
+| **Batched GEMM** ($B=64, 128 \times 128$) | Pooled Transient GPU | 140 | 8.32 ms | 49,556 B | 6 allocs | 5.58x faster |
+| **Batched GEMM** ($B=64, 128 \times 128$) | **Persistent GPU Resident** | **156** | **7.31 ms** | **33,155 B** | **4 allocs** | **6.35x faster (-96.9% allocs)** |
+| **Batched GEMM** ($B=128, 128 \times 128$) | **Persistent GPU Resident** | **91** | **11.17 ms** | **65,926 B** | **4 allocs** | High-throughput batching |
+| **Full Model Training Step** ($128 \to 128 \to 64, B=64$) | CPU Reference | 2 | 585.64 ms | 2,081,288 B | 589 allocs | Baseline |
+| **Full Model Training Step** ($128 \to 128 \to 64, B=64$) | **Persistent GPU Pipeline** | **15** | **76.75 ms** | **235,723 B** | **70 allocs** | **7.63x faster (-88.7% heap mem)** |
+
+### 2. Micro-benchmarks & Allocation Elimination
+
+For smaller kernel workloads, persistent GPU tensors eliminate host allocations and driver upload overhead:
+
+| Benchmark Operation | Mode | Iterations | Time / Op | Go Heap Alloc / Op* | Allocs / Op | Allocation Delta |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
 | **MatMul Forward** ($64 \times 64$) | Pooled Transient GPU | 4,347 | 278.5 µs | 4,744 B | 6 allocs | Baseline |
-| **MatMul Forward** ($64 \times 64$) | **Persistent GPU Resident** | **4,684** | **258.1 µs** | **632 B** | **4 allocs** | **-86.7% memory** |
+| **MatMul Forward** ($64 \times 64$) | **Persistent GPU Resident** | **4,684** | **258.1 µs** | **632 B** | **4 allocs** | **-86.7% heap mem** |
 | **Batched GEMM** ($B=32, 64 \times 64$) | Pooled Transient GPU | 3,744 | 290.5 µs | 12,680 B | 6 allocs | Baseline |
-| **Batched GEMM** ($B=32, 64 \times 64$) | **Persistent GPU Resident** | **3,861** | **318.8 µs** | **8,568 B** | **4 allocs** | **-32.4% memory** |
+| **Batched GEMM** ($B=32, 64 \times 64$) | **Persistent GPU Resident** | **3,861** | **318.8 µs** | **8,568 B** | **4 allocs** | **-32.4% heap mem** |
 | **DBW Optimizer Step** ($N=1024$) | Pooled Transient GPU | 3,229 | 376.5 µs | 41,340 B | 9 allocs | Baseline |
-| **DBW Optimizer Step** ($N=1024$) | **Persistent GPU Resident** | **2,724** | **430.1 µs** | **580 B** | **7 allocs** | **-98.6% memory** |
-| **Training Step** (Batch 32) | CPU Reference | 3,975 | 337.6 µs | 10,122 B | 268 allocs | Baseline |
-| **Training Step** (Batch 32) | **Persistent GPU Pipeline** | **397** | **2.67 ms** | **11,061 B** | **68 allocs** | **-74.6% allocs** |
+| **DBW Optimizer Step** ($N=1024$) | **Persistent GPU Resident** | **2,724** | **430.1 µs** | **580 B** | **7 allocs** | **-98.6% heap mem** |
+| **Training Step** (Tiny MLP $4 \times 8 \times 2, B=32$) | CPU Reference | 3,975 | 337.6 µs | 10,122 B | 268 allocs | Baseline |
+| **Training Step** (Tiny MLP $4 \times 8 \times 2, B=32$) | **Persistent GPU Pipeline** | **397** | **2.67 ms** | **11,061 B** | **68 allocs** | **-74.6% allocs** |
 | **Persistent Sync** (Host $\leftrightarrow$ GPU) | Bidirectional Sync | 14,814 | 78.3 µs | 20,480 B | 6 allocs | Zero copy |
+
+*\*Note: **Go Heap Alloc / Op** measures Go runtime host memory allocations (`B/op`) as reported by `go test -benchmem`. Persistent parameters, gradients, velocities, and DBW packed bitstreams remain resident directly in GPU VRAM without roundtripping through Go heap.*
 
 ### How to Reproduce Locally:
 ```powershell

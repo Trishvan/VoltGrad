@@ -1,7 +1,9 @@
 package voltgrad
 
 import (
+	"fmt"
 	"math/rand"
+	"sync"
 	"testing"
 	"unsafe"
 )
@@ -452,4 +454,109 @@ func TestDeviceTimestampPeriod(t *testing.T) {
 		t.Fatalf("Expected positive TimestampPeriod in DeviceReport, got %f", report.TimestampPeriod)
 	}
 	t.Logf(">>> Vulkan Hardware Timestamp Period Verified: %.2f ns/tick <<<", period)
+}
+
+// TestConcurrentAsyncAndProfiledDispatchSafety tests concurrent execution of DispatchAsync,
+// token.Wait(), and DispatchProfiled on the same ComputeKernel under contention.
+func TestConcurrentAsyncAndProfiledDispatchSafety(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		t.Fatalf("Failed to initialize GpuEngine: %v", err)
+	}
+	defer gpu.Close()
+
+	n := 512
+	wg := uint32((n + 63) / 64)
+	push := [1]uint32{uint32(n)}
+
+	numWorkers := 8
+	iterations := 10
+	var wgWorkers sync.WaitGroup
+	errCh := make(chan error, numWorkers*iterations*2)
+
+	for w := 0; w < numWorkers; w++ {
+		wgWorkers.Add(1)
+		workerID := w
+		go func() {
+			defer wgWorkers.Done()
+			bufX, err := hw.CreateHostCoherentBuffer(uint64(n * 4))
+			if err != nil {
+				errCh <- err
+				return
+			}
+			defer bufX.Free()
+
+			bufY, err := hw.CreateHostCoherentBuffer(uint64(n * 4))
+			if err != nil {
+				errCh <- err
+				return
+			}
+			defer bufY.Free()
+
+			input := make([]int32, n)
+			for i := range input {
+				input[i] = int32((i % 20) - 10)
+			}
+			if err := bufX.WriteInt32(input); err != nil {
+				errCh <- err
+				return
+			}
+			buffers := []*GpuBuffer{bufX, bufY}
+
+			for it := 0; it < iterations; it++ {
+				if (workerID+it)%2 == 0 {
+					token, err := gpu.kernelReLUFwd.DispatchAsync(buffers, unsafe.Pointer(&push[0]), 4, wg)
+					if err != nil {
+						errCh <- fmt.Errorf("worker %d async dispatch failed: %w", workerID, err)
+						return
+					}
+					if err := token.Wait(3000000000); err != nil {
+						errCh <- fmt.Errorf("worker %d token wait failed: %w", workerID, err)
+						return
+					}
+				} else {
+					dur, err := gpu.kernelReLUFwd.DispatchProfiled(buffers, unsafe.Pointer(&push[0]), 4, wg)
+					if err != nil {
+						errCh <- fmt.Errorf("worker %d profiled dispatch failed: %w", workerID, err)
+						return
+					}
+					if dur <= 0 {
+						errCh <- fmt.Errorf("worker %d invalid profiled duration: %v", workerID, dur)
+						return
+					}
+				}
+
+				out, err := bufY.ReadInt32(n)
+				if err != nil {
+					errCh <- fmt.Errorf("worker %d ReadInt32 failed: %w", workerID, err)
+					return
+				}
+				for i, val := range out {
+					expected := input[i]
+					if expected < 0 {
+						expected = 0
+					}
+					if val != expected {
+						errCh <- fmt.Errorf("worker %d output mismatch at %d: got %d, expected %d", workerID, i, val, expected)
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	wgWorkers.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatal(err)
+	}
+
+	t.Log(">>> Concurrent Asynchronous and Profiled Dispatch Safety VERIFIED! <<<")
 }

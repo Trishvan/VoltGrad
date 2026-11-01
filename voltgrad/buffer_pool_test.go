@@ -220,3 +220,94 @@ func TestBufferActiveSizeBounds(t *testing.T) {
 
 	t.Log(">>> Buffer Active-Size Bounds Safety VERIFIED! <<<")
 }
+
+func TestBufferPoolFreeAfterReleaseSafety(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer hw.Close()
+
+	pool := hw.BufferPool()
+
+	// 1. Acquire pooled buffer and release it into the pool
+	buf1, err := hw.GetPooledBuffer(64)
+	if err != nil {
+		t.Fatalf("GetPooledBuffer failed: %v", err)
+	}
+	capSize := buf1.Capacity()
+	buf1.Release()
+
+	// Verify buffer is back in pool
+	pool.mu.Lock()
+	foundInPool := false
+	for _, b := range pool.pools[capSize] {
+		if b == buf1 {
+			foundInPool = true
+			break
+		}
+	}
+	pool.mu.Unlock()
+	if !foundInPool {
+		t.Fatalf("Expected buffer to be in pool after Release()")
+	}
+
+	// 2. Explicitly call Free() on the released buffer (external cleanup edge case)
+	buf1.Free()
+	if !buf1.IsFreed() {
+		t.Fatalf("Expected buf1.IsFreed() to be true")
+	}
+
+	// Verify buf1 was evicted from the pool bucket
+	pool.mu.Lock()
+	stillInPool := false
+	for _, b := range pool.pools[capSize] {
+		if b == buf1 {
+			stillInPool = true
+			break
+		}
+	}
+	pool.mu.Unlock()
+	if stillInPool {
+		t.Fatalf("Free() failed to atomically evict buffer from pool bucket!")
+	}
+
+	// 3. Acquire buffer from pool: MUST NOT return the freed buffer
+	buf2, err := hw.GetPooledBuffer(64)
+	if err != nil {
+		t.Fatalf("GetPooledBuffer failed after freeing prior buffer: %v", err)
+	}
+	defer buf2.Release()
+
+	if buf2 == buf1 {
+		t.Fatalf("BufferPool handed out freed buffer instance!")
+	}
+	if buf2.IsFreed() {
+		t.Fatalf("BufferPool handed out a buffer marked as freed!")
+	}
+	if buf2.mapped == nil {
+		t.Fatalf("BufferPool handed out a buffer with nil memory mapping!")
+	}
+
+	// Verify memory operations on new buffer
+	if err := buf2.WriteInt32([]int32{42, 84}); err != nil {
+		t.Fatalf("WriteInt32 on new buffer failed: %v", err)
+	}
+	vals, err := buf2.ReadInt32(2)
+	if err != nil || vals[0] != 42 || vals[1] != 84 {
+		t.Fatalf("ReadInt32 verification failed on new buffer: %v", err)
+	}
+
+	// 4. Test Put on freed buffer is safely ignored
+	pool.Put(buf1)
+	pool.mu.Lock()
+	for _, b := range pool.pools[capSize] {
+		if b == buf1 {
+			pool.mu.Unlock()
+			t.Fatalf("Put() allowed inserting a freed buffer into the pool!")
+		}
+	}
+	pool.mu.Unlock()
+
+	t.Log(">>> BufferPool Free-After-Release Safety VERIFIED! <<<")
+}

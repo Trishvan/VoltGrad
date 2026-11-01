@@ -663,18 +663,21 @@ func (b *GpuBuffer) Clear() {
 }
 
 // Free releases the buffer and unmaps memory with double-free protection.
+// If the buffer was tracked by a BufferPool, it is atomically evicted so subsequent pool acquisitions never reuse freed memory.
 func (b *GpuBuffer) Free() {
 	if b == nil {
 		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.isFreed {
+		b.mu.Unlock()
 		return
 	}
 	b.isFreed = true
 	b.inUse = false
 	b.size = 0
+	pool := b.pool
+	b.pool = nil
 	if b.mapped != nil {
 		vkSyscall(b.ctx.getProc("vkUnmapMemory"), b.ctx.device, uintptr(b.memory))
 		b.mapped = nil
@@ -686,5 +689,10 @@ func (b *GpuBuffer) Free() {
 	if b.memory != 0 {
 		vkSyscall(b.ctx.getProc("vkFreeMemory"), b.ctx.device, uintptr(b.memory), 0)
 		b.memory = 0
+	}
+	b.mu.Unlock()
+
+	if pool != nil {
+		pool.removeBuffer(b)
 	}
 }

@@ -57,6 +57,8 @@ type ComputeKernel struct {
 	numBindings  int
 	pushSize     uint32
 	inFlight     bool
+	seq          uint64
+	completedSeq uint64
 	mu           sync.Mutex
 }
 
@@ -274,6 +276,7 @@ func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize
 // ExecutionToken represents an in-flight asynchronous GPU compute submission.
 type ExecutionToken struct {
 	kernel    *ComputeKernel
+	seq       uint64
 	completed bool
 	mu        sync.Mutex
 }
@@ -290,21 +293,49 @@ func (t *ExecutionToken) Wait(timeoutNs uint64) error {
 		return nil
 	}
 
-	r := vkSyscall(t.kernel.hw.getProc("vkWaitForFences"), t.kernel.hw.device, 1, uintptr(unsafe.Pointer(&t.kernel.fence)), 1, uintptr(timeoutNs))
-	if r != 0 {
-		return fmt.Errorf("GPU compute execution failed or timed out: %d", r)
+	k := t.kernel
+	k.mu.Lock()
+	// If already completed by a subsequent dispatch or wait, resolve immediately
+	if t.seq <= k.completedSeq {
+		t.completed = true
+		k.mu.Unlock()
+		return nil
 	}
 
+	// This token corresponds to the currently in-flight execution on hardware
+	if k.inFlight && t.seq == k.seq {
+		err := k.waitInFlightLocked(timeoutNs)
+		k.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		t.completed = true
+		return nil
+	}
+
+	k.mu.Unlock()
 	t.completed = true
-	t.kernel.mu.Lock()
-	t.kernel.inFlight = false
-	t.kernel.mu.Unlock()
 	return nil
 }
 
-// DispatchAsync records and submits the compute dispatch asynchronously to the GPU compute queue,
-// returning an ExecutionToken without blocking the CPU thread.
-func (k *ComputeKernel) DispatchAsync(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) (*ExecutionToken, error) {
+// waitInFlightLocked blocks until the currently in-flight dispatch completes on hardware.
+// Assumes k.mu is held.
+func (k *ComputeKernel) waitInFlightLocked(timeoutNs uint64) error {
+	if !k.inFlight {
+		return nil
+	}
+	r := vkSyscall(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(timeoutNs))
+	if r != 0 {
+		return fmt.Errorf("GPU compute execution failed or timed out: %d", r)
+	}
+	k.inFlight = false
+	k.completedSeq = k.seq
+	return nil
+}
+
+// dispatchAsyncLocked records and submits the compute dispatch asynchronously to the compute queue.
+// Assumes k.mu is held.
+func (k *ComputeKernel) dispatchAsyncLocked(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) (*ExecutionToken, error) {
 	if len(buffers) != k.numBindings {
 		return nil, fmt.Errorf("kernel requires %d buffers, got %d", k.numBindings, len(buffers))
 	}
@@ -312,16 +343,11 @@ func (k *ComputeKernel) DispatchAsync(buffers []*GpuBuffer, pushData unsafe.Poin
 		workgroups = 1
 	}
 
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
 	// If a previous asynchronous dispatch is still in-flight on this kernel, await completion first
 	if k.inFlight {
-		r := vkSyscall(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(2000000000))
-		if r != 0 {
-			return nil, fmt.Errorf("previous asynchronous kernel execution still pending or timed out: %d", r)
+		if err := k.waitInFlightLocked(2000000000); err != nil {
+			return nil, fmt.Errorf("previous asynchronous kernel execution still pending or timed out: %w", err)
 		}
-		k.inFlight = false
 	}
 
 	// Update descriptor sets
@@ -383,8 +409,17 @@ func (k *ComputeKernel) DispatchAsync(buffers []*GpuBuffer, pushData unsafe.Poin
 		return nil, fmt.Errorf("vkQueueSubmit failed: %d", r)
 	}
 
+	k.seq++
 	k.inFlight = true
-	return &ExecutionToken{kernel: k}, nil
+	return &ExecutionToken{kernel: k, seq: k.seq}, nil
+}
+
+// DispatchAsync records and submits the compute dispatch asynchronously to the GPU compute queue,
+// returning an ExecutionToken without blocking the CPU thread.
+func (k *ComputeKernel) DispatchAsync(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) (*ExecutionToken, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.dispatchAsyncLocked(buffers, pushData, pushSize, workgroups)
 }
 
 // Dispatch synchronously executes the compute shader across the given storage buffers with push constants.
@@ -397,21 +432,32 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 }
 
 // DispatchProfiled executes the compute shader and returns the execution duration.
-// It leverages Vulkan GPU query pools when supported, with fallback to high-precision timers.
+// It leverages Vulkan GPU query pools when supported, with fallback to high-precision timers,
+// fully guarded under kernel mutex synchronization to prevent concurrent pipeline corruption.
 func (k *ComputeKernel) DispatchProfiled(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) (time.Duration, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	if len(buffers) != k.numBindings {
+		return 0, fmt.Errorf("kernel requires %d buffers, got %d", k.numBindings, len(buffers))
+	}
+	if workgroups == 0 {
+		workgroups = 1
+	}
+
+	// Await any in-flight execution prior to recording profiled commands
+	if k.inFlight {
+		if err := k.waitInFlightLocked(2000000000); err != nil {
+			return 0, fmt.Errorf("previous asynchronous kernel execution still pending or timed out: %w", err)
+		}
+	}
+
 	if k.queryPool != 0 {
 		cmdResetQP := k.hw.getProc("vkCmdResetQueryPool")
 		cmdWriteTS := k.hw.getProc("vkCmdWriteTimestamp")
 		getQPResults := k.hw.getProc("vkGetQueryPoolResults")
 
 		if cmdResetQP != 0 && cmdWriteTS != 0 && getQPResults != 0 {
-			if len(buffers) != k.numBindings {
-				return 0, fmt.Errorf("kernel requires %d buffers, got %d", k.numBindings, len(buffers))
-			}
-			if workgroups == 0 {
-				workgroups = 1
-			}
-
 			writes := make([]VkWriteDescriptorSet, k.numBindings)
 			bufInfos := make([]VkDescriptorBufferInfo, k.numBindings)
 			for i, b := range buffers {
@@ -468,9 +514,10 @@ func (k *ComputeKernel) DispatchProfiled(buffers []*GpuBuffer, pushData unsafe.P
 				return 0, fmt.Errorf("vkQueueSubmit failed: %d", r)
 			}
 
-			r = vkSyscall(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(2000000000))
-			if r != 0 {
-				return 0, fmt.Errorf("GPU compute execution failed or timed out: %d", r)
+			k.seq++
+			k.inFlight = true
+			if err := k.waitInFlightLocked(2000000000); err != nil {
+				return 0, fmt.Errorf("GPU compute execution failed or timed out: %w", err)
 			}
 
 			var timestamps [2]uint64
@@ -485,13 +532,14 @@ func (k *ComputeKernel) DispatchProfiled(buffers []*GpuBuffer, pushData unsafe.P
 	}
 
 	start := time.Now()
-	token, err := k.DispatchAsync(buffers, pushData, pushSize, workgroups)
+	token, err := k.dispatchAsyncLocked(buffers, pushData, pushSize, workgroups)
 	if err != nil {
 		return 0, err
 	}
-	if err := token.Wait(2000000000); err != nil {
+	if err := k.waitInFlightLocked(2000000000); err != nil {
 		return 0, err
 	}
+	token.completed = true
 	return time.Since(start), nil
 }
 
@@ -501,8 +549,7 @@ func (k *ComputeKernel) Close() {
 	defer k.mu.Unlock()
 
 	if k.inFlight && k.fence != 0 {
-		vkSyscall(k.hw.getProc("vkWaitForFences"), k.hw.device, 1, uintptr(unsafe.Pointer(&k.fence)), 1, uintptr(1000000000))
-		k.inFlight = false
+		_ = k.waitInFlightLocked(1000000000)
 	}
 
 	if k.queryPool != 0 {
