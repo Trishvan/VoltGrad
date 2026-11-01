@@ -42,6 +42,15 @@ Whenever you call the plain (non-`Ctx`) methods — `Forward`, `Backward`, `Step
 **Is concurrency supported?**
 VoltGrad targets a single-threaded training loop: one device, one compute queue, fence-serialized dispatches. The `BufferPool` is safe for concurrent use (mutex-guarded), but the pipeline, engine, and tensor operations are not — coordinate external access if you touch them from multiple goroutines.
 
+**How can I avoid per-iteration host-to-device transfer overhead?**
+Bind layer parameters once with `LinearLayer.BindGPU` (or manage `NewPersistentGpuTensor` directly): weights and bias stay resident in GPU memory across iterations and synchronize only on demand (`SyncToGPU` / `SyncToHost`), instead of being re-uploaded on every forward call. `BenchmarkPersistentGpuTensorSync` measures the round-trip cost.
+
+**When would I use `DispatchAsync`, `DispatchProfiled`, or `ExecutionToken`?**
+`Dispatch` blocks the CPU thread until the GPU finishes. `DispatchAsync` instead returns an `ExecutionToken` whose `Wait(timeoutNs)` you call when ready, so host-side work can overlap GPU execution. `DispatchProfiled` returns the measured execution duration, from GPU timestamp queries when the device exposes them and from wall-clock timing otherwise.
+
+**How can I measure and compare CPU versus GPU performance?**
+Run the bundled benchmark suite: `go test -bench=. -run '^$' ./voltgrad/`. It includes `BenchmarkCPUMatMul`, `BenchmarkGPUMatMul`, `BenchmarkBatchedGEMM`, `BenchmarkDBWOptimizerStep`, and `BenchmarkPersistentGpuTensorSync`. The GPU benchmarks skip automatically when no `shaderInt64` device is available, so the same command runs on any machine.
+
 **Where is checkpointing / model serialization?**
 Not yet — it is on the 1.0 roadmap. State is accessible for manual serialization today: parameters are `*DynamicBitTensor` objects whose contents are readable through `ToInt64Slice()`, and reconstructing a fresh model via `FromInt64Slice` restores weights (bit-widths are re-derived as the minimal fit).
 
@@ -59,8 +68,8 @@ No GPU passed the compute-queue plus `shaderInt64` gate. Update drivers, verify 
 **`vulkan-1.dll dynamic load failure` / `failed loading Vulkan shared library (...)`**
 The Vulkan loader is missing or not on the search path (Windows driver repair; install `libvulkan1` on Linux; MoltenVK on macOS). This is an environment issue, not a library defect.
 
-**`panic: buffer overflow on Write*`**
-A slice larger than the target buffer was written. Size buffers to `len(data) * elementSize` before writing — the library's own code always does; custom kernel code must too.
+**`buffer overflow: ... exceeds buffer capacity` / `buffer read bounds error: ... exceeds buffer capacity`**
+`GpuBuffer` memory I/O is bounds-checked in both directions: writing a slice that exceeds the buffer's capacity, or reading more elements than the buffer holds, returns an error instead of corrupting mapped memory. Size buffers to `len(data) * elementSize` before writing, and size reads to the number of elements actually present.
 
 **Training runs but loss does not fall**
 Check conversion to Q16 (learning-rate 655 ≈ 0.01), that `ZeroGrad()` zeroes every gradient tensor, that `Gradients()` matches `Parameters()` pairwise, and that scratch values are stored before they are needed in `Backward`. Nothing widens and nothing falls typically means dead gradients.

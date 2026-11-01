@@ -1,0 +1,88 @@
+# Builds and deploys the documentation site to GitHub Pages.
+#
+# Sources: the pages under docs/ (committed) plus the project and shader
+# READMEs, which are staged into the docs tree here so they become part
+# of the same site. Repo-relative links are rewritten for the site
+# layout: pages documented under docs/ link to each other, links to the
+# staged READMEs point at their site copies, and links to source files
+# resolve to GitHub.
+
+name: Docs
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - 'README.md'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+      - 'voltgrad/shaders/README.md'
+      - 'voltgrad/shaders/*.comp'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build documentation site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install MkDocs and the Material theme
+        run: pip install "mkdocs>=1.6,<2" "mkdocs-material>=9.5,<10"
+
+      - name: Stage auxiliary pages
+        run: |
+          cp README.md docs/project-readme.md
+          cp voltgrad/shaders/README.md docs/shaders-reference.md
+          cp docs/README.md docs/index.md
+          rm docs/README.md
+
+      - name: Rewrite cross-page links for the site tree
+        run: |
+          sed -i \
+            -e 's#](../README.md)#](project-readme.md)#g' \
+            -e 's#](../voltgrad/shaders/README.md)#](shaders-reference.md)#g' \
+            docs/*.md
+          sed -i \
+            -e 's#](voltgrad/shaders/README.md)#](shaders-reference.md)#g' \
+            -e 's#](docs/README.md)#](index.md)#g' \
+            -e 's#](docs/adr/)#](https://github.com/Trishvan/VoltGrad/tree/main/docs/adr)#g' \
+            -e 's#](docs/#](#g' \
+            -e 's#](voltgrad/#](https://github.com/Trishvan/VoltGrad/blob/main/voltgrad/#g' \
+            docs/project-readme.md
+
+      - name: Build site
+        run: mkdocs build --strict --site-dir site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy site
+        id: deployment
+        uses: actions/deploy-pages@v4

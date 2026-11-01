@@ -1,0 +1,46 @@
+# Site configuration for the VoltGrad documentation.
+# Built with MkDocs and the Material theme; deployed to GitHub Pages
+# by .github/workflows/docs.yml.
+site_name: VoltGrad
+site_description: Fixed-point neural-network training in Go on Vulkan GPUs
+site_url: https://trishvan.github.io/VoltGrad/
+repo_url: https://github.com/Trishvan/VoltGrad
+repo_name: Trishvan/VoltGrad
+
+theme:
+  name: material
+  language: en
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Tutorial: tutorial.md
+  - Training Guide: training-guide.md
+  - API Reference: api-reference.md
+  - FAQ: faq.md
+  - Project README: project-readme.md
+  - Shader Reference: shaders-reference.md
+  - ADR-0001: adr/0001-tensor-wise-dynamic-bit-widening.md

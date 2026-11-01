@@ -147,14 +147,16 @@ type LayerConfig struct {
 }
 
 type LinearLayer struct {
-    Name     string
-    InDim    int
-    OutDim   int
-    Weight   *DynamicBitTensor // shape [OutDim, InDim]
-    GradW    *DynamicBitTensor
-    Bias     *DynamicBitTensor // shape [OutDim]; nil unless UseBias
-    GradBias *DynamicBitTensor
-    UseBias  bool
+    Name      string
+    InDim     int
+    OutDim    int
+    Weight    *DynamicBitTensor    // shape [OutDim, InDim]
+    GradW     *DynamicBitTensor
+    Bias      *DynamicBitTensor    // shape [OutDim]; nil unless UseBias
+    GradBias  *DynamicBitTensor
+    UseBias   bool
+    GpuWeight *PersistentGpuTensor // GPU-resident weights; set by BindGPU, nil otherwise
+    GpuBias   *PersistentGpuTensor // GPU-resident bias; set by BindGPU, nil otherwise
 }
 
 func NewLinearLayer(name string, inDim, outDim int, initialBits int, useBias bool) *LinearLayer
@@ -187,7 +189,13 @@ Maintenance:
 ```go
 func (l *LinearLayer) ZeroGrad()
 func (l *LinearLayer) InitWeightsIdentity(scale int32) // diagonal = scale, elsewhere 0 (Q16 units)
+
+func (l *LinearLayer) BindGPU(hw *HardwareContext) error
+func (l *LinearLayer) FreeGPU()
+func (l *LinearLayer) SyncToHost() error
 ```
+
+`BindGPU` allocates persistent GPU-resident buffers for `Weight` and `Bias` (stored in `GpuWeight` / `GpuBias`) so kernels can keep weights resident across steps instead of uploading them per forward call. `SyncToHost` pulls the latest GPU-resident values back into the CPU tensors (for checkpointing or CPU-side inspection); `FreeGPU` releases the persistent allocations. Binding is manual and explicit: only the weight — and the bias when the layer has one — receive persistent buffers, while gradients remain CPU-side; a failed bias binding rolls back the weight binding cleanly, and residency is never released automatically — call `FreeGPU` when done.
 
 ## 5. Models and contexts
 
@@ -355,17 +363,17 @@ type GpuBuffer struct { /* opaque */ }
 func (b *GpuBuffer) Size() uint64     // active size in bytes
 func (b *GpuBuffer) Capacity() uint64 // allocated capacity in bytes
 func (b *GpuBuffer) Clear()
-func (b *GpuBuffer) WriteInt32(data []int32)
-func (b *GpuBuffer) WriteUint32(data []uint32)
-func (b *GpuBuffer) WriteInt64(data []int64)
-func (b *GpuBuffer) ReadInt32(count int) []int32
-func (b *GpuBuffer) ReadUint32(count int) []uint32
-func (b *GpuBuffer) ReadInt64(count int) []int64
+func (b *GpuBuffer) WriteInt32(data []int32) error
+func (b *GpuBuffer) WriteUint32(data []uint32) error
+func (b *GpuBuffer) WriteInt64(data []int64) error
+func (b *GpuBuffer) ReadInt32(count int) ([]int32, error)
+func (b *GpuBuffer) ReadUint32(count int) ([]uint32, error)
+func (b *GpuBuffer) ReadInt64(count int) ([]int64, error)
 func (b *GpuBuffer) Free()
 func (b *GpuBuffer) Release()
 ```
 
-Write methods panic if the slice exceeds the buffer capacity (a programming-contract check). Read methods always return copies in Go-owned memory, never references into mapped memory. `Free` releases unconditionally; `Release` returns a pooled buffer to its pool instead.
+Bounds checking is strict on both directions: a write slice larger than the buffer, or a read count beyond the buffer contents, returns an error rather than corrupting memory or panicking. Reads always return copies in Go-owned memory, never references into mapped memory. `Free` releases unconditionally; `Release` returns a pooled buffer to its pool instead.
 
 ```go
 type BufferPool struct { /* opaque */ }
@@ -378,6 +386,24 @@ func (p *BufferPool) Clear()
 
 Buckets pool buffers by power-of-two capacity (minimum 256 bytes). `Get` returns any pooled buffer with `Capacity() >= size`; `Put` returns a buffer for reuse; `Clear` releases the whole pool. All pool operations are mutex-guarded.
 
+```go
+type PersistentGpuTensor struct { /* opaque */ }
+
+func NewPersistentGpuTensor(hw *HardwareContext, t *DynamicBitTensor) (*PersistentGpuTensor, error)
+
+func (pt *PersistentGpuTensor) Allocate() error
+func (pt *PersistentGpuTensor) Buffer() *GpuBuffer
+func (pt *PersistentGpuTensor) Free()
+func (pt *PersistentGpuTensor) Tensor() *DynamicBitTensor
+
+func (pt *PersistentGpuTensor) IsDirty() bool
+func (pt *PersistentGpuTensor) MarkDirty()
+func (pt *PersistentGpuTensor) SyncToGPU() error
+func (pt *PersistentGpuTensor) SyncToHost() error
+```
+
+A `PersistentGpuTensor` keeps a mirror of a `DynamicBitTensor` resident in GPU memory across training iterations, eliminating repeated host-to-device uploads and device-to-host readbacks on every forward/backward/optimizer step. The constructor validates its arguments, provisions the resident buffer, and uploads the tensor's current packed contents; `Allocate` provisions it again explicitly after a `Free`. `SyncToGPU` re-pushes the CPU tensor's current values; kernels that mutate the resident buffer in place call `MarkDirty`, and `SyncToHost` reads the GPU state back into the CPU tensor at the tensor's current bit-width. All operations are mutex-guarded. `LinearLayer.BindGPU` wires exactly this mechanism to a layer's weights and biases (exposed as `GpuWeight` / `GpuBias`).
+
 ## 10. Kernels and pipelines
 
 ```go
@@ -389,7 +415,7 @@ func (p *Pipeline) Dispatch(inputPairs []int32, pushParam int32) ([]int32, error
 func (p *Pipeline) Close()
 ```
 
-`NewPipeline` compiles SPIR-V into a compute pipeline with a fixed layout: two storage buffers (binding 0 input, binding 1 output) and a 4-byte push constant. `nil` bytecode selects the embedded default kernel (`train.spv`). `Dispatch` uploads `[x0, y0, x1, y1, ...]` pairs, dispatches in workgroups of 64 with padding, waits on a fence (2-second timeout), and returns the first `count` outputs.
+`NewPipeline` compiles SPIR-V into a compute pipeline with a fixed layout: two storage buffers (binding 0 input, binding 1 output) and a 4-byte push constant. `nil` bytecode selects the embedded default kernel (`train.spv`). `Dispatch` uploads `[x0, y0, x1, y1, ...]` pairs, dispatches in workgroups of 64 with padding, waits on a fence (2-second timeout), and returns one output per input pair (`len(inputPairs)/2` values).
 
 ```go
 type ComputeKernel struct { /* opaque */ }
@@ -399,7 +425,25 @@ func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, 
 func (k *ComputeKernel) Close()
 ```
 
-`ComputeKernel` is the general form: any number of storage-buffer bindings and a `pushSize`-byte push constant block, dispatched over an explicit workgroup count. `pushData` must exactly match the push-constant layout declared in the shader. Vulkan call results are checked at every dispatch step; the 2-second fence wait applies here as well.
+`ComputeKernel` is the general form: any number of storage-buffer bindings and a `pushSize`-byte push constant block, with synchronous or asynchronous execution.
+
+```go
+func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) error
+func (k *ComputeKernel) DispatchAsync(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) (*ExecutionToken, error)
+func (k *ComputeKernel) DispatchProfiled(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) (time.Duration, error)
+```
+
+`Dispatch` records, submits, and waits on the fence before returning (2-second timeout). `DispatchAsync` submits without blocking the CPU thread and returns an `ExecutionToken`:
+
+```go
+type ExecutionToken struct { /* opaque */ }
+
+func (t *ExecutionToken) Wait(timeoutNs uint64) error // e.g. 2_000_000_000 for 2 seconds
+```
+
+`Wait` blocks until the in-flight submission completes or the timeout expires, so you can overlap host-side work with GPU execution. `DispatchProfiled` returns the execution duration, measured through Vulkan query pools when the device supports them and through high-precision timers otherwise.
+
+`pushData` must exactly match the push-constant layout declared in the shader. Vulkan call results are checked at every dispatch step.
 
 ## 11. GPU engine
 
