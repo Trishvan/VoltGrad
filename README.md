@@ -30,6 +30,7 @@ All code lives in this standalone folder `voltgrad/` with **zero external depend
 | [`vulkan_loader_windows.go`](voltgrad/vulkan_loader_windows.go) / [`_unix.go`](voltgrad/vulkan_loader_unix.go) | Zero-CGO cross-platform dynamic Vulkan loader for Windows (`vulkan-1.dll`), Linux (`libvulkan.so`), and macOS (`libvulkan.dylib`). |
 | [`gpu_performance_test.go`](voltgrad/gpu_performance_test.go) | Performance and parity suite for Batched GEMM, GPU Activations, MSE Loss, and Device Telemetry. |
 | [`shaders/`](voltgrad/shaders/) | GLSL compute shader sources (GEMM forward/backward, batched GEMM, ReLU, Loss, DBW repack, Optimizer), compiled SPIR-V bytecode, and build scripts. |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records, including [ADR-0001: Tensor-Wise DBW](docs/adr/0001-tensor-wise-dynamic-bit-widening.md). |
 
 ---
 
@@ -169,6 +170,18 @@ PASS
 
 ---
 
+## 🏛️ Core Design Principles & Architecture Decisions
+
+VoltGrad adheres to strict open-source design principles formalized in our Architecture Decision Records:
+
+- **[ADR-0001: Tensor-Wise Dynamic Bit Widening](docs/adr/0001-tensor-wise-dynamic-bit-widening.md)**: Standardizes on **tensor-wise Dynamic Bit Widening** rather than block-wise DBW.
+  - **One dynamic bit-width per tensor**: Guarantees simple, deterministic memory layouts without irregular tiling or inner-loop thread divergence.
+  - **Predictable widening & repacking**: Definite rules for when a tensor expands bit-width and repacks in parallel on GPU.
+  - **Strict CPU/GPU parity**: Both backends yield bit-for-bit identical integers across all widths ($W \in [2, 64]$).
+  - **Correctness and maintainability over theoretical micro-compression**: Optimizes for open-source community maintainability, reproducible debugging, and numerical rock-solid stability.
+
+---
+
 ## 🗺️ Roadmap
 
 ### VoltGrad 0.2 — GPU execution and numerical correctness (Priority 1)
@@ -188,11 +201,12 @@ PASS
 - [x] GPU profiling and timestamps (structured execution telemetry and hardware reporting).
 
 ### VoltGrad 0.4 — Adaptive computing
-- [ ] Block-wise DBW.
+- [x] Tensor-wise DBW architectural standardization ([ADR-0001](docs/adr/0001-tensor-wise-dynamic-bit-widening.md)).
 - [ ] Mixed-precision execution.
 - [ ] Adaptive precision policies.
 - [ ] Fused neural-network operations.
 - [ ] Execution graph.
+*(Note: Block-wise DBW is documented in ADR-0001 as deferred to future research exploration).*
 
 ### VoltGrad 1.0 — Production runtime
 - [x] Cross-platform Vulkan loader (Windows DLL, Linux `.so`, macOS `.dylib` / MoltenVK with zero CGO).
