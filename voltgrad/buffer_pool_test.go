@@ -1,6 +1,7 @@
 package voltgrad
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -310,4 +311,107 @@ func TestBufferPoolFreeAfterReleaseSafety(t *testing.T) {
 	pool.mu.Unlock()
 
 	t.Log(">>> BufferPool Free-After-Release Safety VERIFIED! <<<")
+}
+
+// TestBufferUseAfterReleaseFails verifies that attempting to read, write, or resize a buffer
+// after calling Release() or Put() returns an error.
+func TestBufferUseAfterReleaseFails(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer hw.Close()
+
+	buf, err := hw.GetPooledBuffer(64)
+	if err != nil {
+		t.Fatalf("GetPooledBuffer failed: %v", err)
+	}
+
+	// Verify valid write/read when in-use
+	if err := buf.WriteInt32([]int32{10, 20}); err != nil {
+		t.Fatalf("WriteInt32 failed on in-use buffer: %v", err)
+	}
+	res, err := buf.ReadInt32(2)
+	if err != nil || res[0] != 10 || res[1] != 20 {
+		t.Fatalf("ReadInt32 failed on in-use buffer: %v", err)
+	}
+
+	// Release back to pool
+	buf.Release()
+
+	// Attempt writes after release - MUST fail
+	if err := buf.WriteInt32([]int32{30, 40}); err == nil {
+		t.Fatalf("Expected error writing int32 to released buffer, got nil")
+	}
+	if err := buf.WriteUint32([]uint32{30, 40}); err == nil {
+		t.Fatalf("Expected error writing uint32 to released buffer, got nil")
+	}
+	if err := buf.WriteInt64([]int64{30, 40}); err == nil {
+		t.Fatalf("Expected error writing int64 to released buffer, got nil")
+	}
+
+	// Attempt reads after release - MUST fail
+	if _, err := buf.ReadInt32(2); err == nil {
+		t.Fatalf("Expected error reading int32 from released buffer, got nil")
+	}
+	if _, err := buf.ReadUint32(2); err == nil {
+		t.Fatalf("Expected error reading uint32 from released buffer, got nil")
+	}
+	if _, err := buf.ReadInt64(2); err == nil {
+		t.Fatalf("Expected error reading int64 from released buffer, got nil")
+	}
+
+	// Attempt SetActiveSize after release - MUST fail
+	if err := buf.SetActiveSize(32); err == nil {
+		t.Fatalf("Expected error setting active size on released buffer, got nil")
+	}
+
+	t.Log(">>> Buffer Use-After-Release Safety VERIFIED! <<<")
+}
+
+// TestBufferPoolClearConcurrentReleaseSafety verifies thread safety and absence of data races
+// or deadlocks during concurrent pool clearing and buffer releases.
+func TestBufferPoolClearConcurrentReleaseSafety(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer hw.Close()
+
+	pool := hw.BufferPool()
+	const numGoroutines = 8
+	const numBuffers = 10
+
+	var wg sync.WaitGroup
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 5; i++ {
+				var bufs []*GpuBuffer
+				for b := 0; b < numBuffers; b++ {
+					buf, err := pool.Get(uint64(64 * (b + 1)))
+					if err == nil {
+						bufs = append(bufs, buf)
+					}
+				}
+				for _, buf := range bufs {
+					buf.Release()
+				}
+			}
+		}()
+	}
+
+	// Concurrently invoke Clear()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 5; i++ {
+			pool.Clear()
+		}
+	}()
+
+	wg.Wait()
+	pool.Clear()
+	t.Log(">>> BufferPool Concurrent Clear and Release Safety VERIFIED! <<<")
 }

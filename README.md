@@ -17,7 +17,7 @@ All code lives in this standalone folder `voltgrad/` with **zero CGO, no heavywe
 | File | Purpose |
 | :--- | :--- |
 | [`tensor.go`](voltgrad/tensor.go) | `DynamicBitTensor` with mandatory Dynamic Bit Widening ($W \in [2, 64]$ bits), bit-packing, zero quantization clipping. |
-| [`persistent_tensor.go`](voltgrad/persistent_tensor.go) | `PersistentGpuTensor` maintaining resident weights, bias, and velocity states in GPU memory across iterations. |
+| [`persistent_tensor.go`](voltgrad/persistent_tensor.go) | `PersistentGpuTensor` maintaining resident weights, bias, and velocity states in GPU-accessible host-coherent memory across iterations. |
 | [`model.go`](voltgrad/model.go) | `ModelArchitecture` & `BatchedModelArchitecture` interfaces, `ComputeLoss` (MSE, Cross-Entropy, Brier). |
 | [`hardware.go`](voltgrad/hardware.go) | Direct Vulkan GPU discovery, logical device initialization, host-coherent memory mapping, bounds-checked `GpuBuffer`, and `DeviceReport`. |
 | [`buffer_pool.go`](voltgrad/buffer_pool.go) | Zero-allocation power-of-two capacity bucketing for Vulkan host-coherent storage buffers. |
@@ -208,7 +208,7 @@ For smaller kernel workloads, persistent GPU tensors eliminate host allocations 
 | **Training Step** (Tiny MLP $4 \times 8 \times 2, B=32$) | **Persistent GPU Pipeline** | **397** | **2.67 ms** | **11,061 B** | **68 allocs** | **-74.6% allocs** |
 | **Persistent Sync** (Host $\leftrightarrow$ GPU) | Bidirectional Sync | 14,814 | 78.3 µs | 20,480 B | 6 allocs | Zero copy |
 
-*\*Note: **Go Heap Alloc / Op** measures Go runtime host memory allocations (`B/op`) as reported by `go test -benchmem`. Persistent parameters, gradients, velocities, and DBW packed bitstreams remain resident directly in GPU VRAM without roundtripping through Go heap.*
+*\*Note on Memory Architecture & Go Heap Alloc / Op: `Go Heap Alloc / Op` measures Go runtime host memory allocations (`B/op`) as reported by `go test -benchmem`. `PersistentGpuTensor` allocates 4 buffers (`bufPacked`, `bufInt64`, `bufGrad`, `bufVel`) of 8 bytes/element each (~32 bytes per parameter element before Vulkan buffer alignment) using `CreateHostCoherentBuffer`. This preallocates physical capacity headroom for DBW widening up to 64-bit without reallocating, resident in host-visible, host-coherent memory (ReBAR VRAM or unified system memory depending on hardware). Inputs and intermediate layer activations currently travel per-batch between Go slices and temporary GPU buffers; full intermediate graph residency without activation roundtrips is targeted for VoltGrad 0.4 (see [CONTRIBUTING.md](CONTRIBUTING.md)).\*
 
 ### How to Reproduce Locally:
 ```powershell
@@ -262,3 +262,12 @@ VoltGrad adheres to strict open-source design principles formalized in our Archi
 - [ ] Model serialization.
 - [ ] C ABI and language bindings.
 - [x] Benchmark and compatibility suite.
+
+---
+
+## 🤝 Contributing
+
+We welcome community contributions, hardware validation reports, and kernel optimizations! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Development environment setup (Go 1.22+, Vulkan SDK, `glslc`).
+- Open priority tasks (Vulkan multi-vendor testing, SPIR-V subgroup tiling, fused kernels, execution graph).
+- PR guidelines and testing invariants (Zero CGO, ADR-0001 tensor-wise DBW, bit-for-bit parity).

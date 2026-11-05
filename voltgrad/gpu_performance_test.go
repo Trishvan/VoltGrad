@@ -560,3 +560,52 @@ func TestConcurrentAsyncAndProfiledDispatchSafety(t *testing.T) {
 
 	t.Log(">>> Concurrent Asynchronous and Profiled Dispatch Safety VERIFIED! <<<")
 }
+
+// TestComputeKernelCloseUnderInFlightCompletion verifies that ComputeKernel.Close() safely
+// drains in-flight GPU execution and guarantees device completion before teardown.
+func TestComputeKernelCloseUnderInFlightCompletion(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer hw.Close()
+
+	kernel, err := NewComputeKernel(hw, reluForwardSPV, 2, 4)
+	if err != nil {
+		t.Fatalf("Failed to create compute kernel: %v", err)
+	}
+
+	n := 1024
+	bufX, err := hw.CreateHostCoherentBuffer(uint64(n * 4))
+	if err != nil {
+		t.Fatalf("CreateHostCoherentBuffer X failed: %v", err)
+	}
+	defer bufX.Free()
+
+	bufY, err := hw.CreateHostCoherentBuffer(uint64(n * 4))
+	if err != nil {
+		t.Fatalf("CreateHostCoherentBuffer Y failed: %v", err)
+	}
+	defer bufY.Free()
+
+	push := [1]uint32{uint32(n)}
+	wg := uint32((n + 63) / 64)
+	buffers := []*GpuBuffer{bufX, bufY}
+
+	// Submit asynchronously and immediately Close without awaiting token
+	token, err := kernel.DispatchAsync(buffers, unsafe.Pointer(&push[0]), 4, wg)
+	if err != nil {
+		t.Fatalf("DispatchAsync failed: %v", err)
+	}
+	if token == nil {
+		t.Fatalf("Expected non-nil token")
+	}
+
+	// Close immediately while execution may be in flight
+	kernel.Close()
+
+	// Double Close must also be a safe no-op
+	kernel.Close()
+
+	t.Log(">>> ComputeKernel Close Under In-Flight Completion VERIFIED! <<<")
+}

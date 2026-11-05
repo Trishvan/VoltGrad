@@ -95,7 +95,10 @@ func (p *BufferPool) removeBuffer(buf *GpuBuffer) {
 	}
 }
 
-// Put returns a buffer back to the pool for reuse with atomic state transition validation.
+// Put returns a buffer back to the pool for reuse, relinquishing caller ownership.
+// After calling Put, the caller MUST NOT retain, access, read from, write to, or release the buffer.
+// Put marks the buffer as not in use (inUse = false), resets its active size to 0,
+// and returns it to the appropriate power-of-two pool bucket with atomic state validation.
 func (p *BufferPool) Put(buf *GpuBuffer) {
 	if buf == nil {
 		return
@@ -123,17 +126,20 @@ func (p *BufferPool) Put(buf *GpuBuffer) {
 	p.pools[capSize] = append(list, buf)
 }
 
-// Clear releases all pooled GPU buffers from memory.
+// Clear releases all pooled GPU buffers from memory in a thread-safe manner.
+// It drains pooled buffers from all buckets under pool lock before destroying them,
+// ensuring no data race with concurrent Release() or Free() calls.
 func (p *BufferPool) Clear() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	var allBuffers []*GpuBuffer
 	for capSize, list := range p.pools {
-		for _, b := range list {
-			b.pool = nil
-			b.Free()
-		}
+		allBuffers = append(allBuffers, list...)
 		delete(p.pools, capSize)
+	}
+	p.mu.Unlock()
+
+	for _, b := range allBuffers {
+		b.Free()
 	}
 }
 

@@ -5,9 +5,27 @@ import (
 	"sync"
 )
 
-// PersistentGpuTensor maintains tensor data persistently allocated in Vulkan GPU memory across training iterations.
-// It holds both packed DBW words, 64-bit parameter representations, gradients, and velocities in host-coherent GPU memory,
-// completely eliminating repetitive host-to-device uploads and device-to-host readbacks on every training step.
+// PersistentGpuTensor maintains tensor parameters, gradients, and velocities persistently in GPU-accessible, host-coherent memory across training iterations.
+//
+// Memory Architecture & Preallocation Model:
+// Each PersistentGpuTensor allocates 4 storage buffers in host-coherent GPU memory:
+//  1. bufPacked: Packed dynamic bitstream words ([]uint32).
+//  2. bufInt64:  64-bit uncompressed parameter values for high-precision MAC and auto-widening.
+//  3. bufGrad:   Gradient accumulators (accumulated directly on GPU during backward passes).
+//  4. bufVel:    First-moment velocity states for Momentum / Adam-Q optimizers.
+//
+// Each buffer is preallocated with capacity = len * 8 bytes (minimum 64 bytes). Across the 4 buffers,
+// this preallocates approximately 32 bytes per parameter element (before Vulkan memory alignment).
+// This preallocation provides fixed headroom for arbitrary Dynamic Bit Widening (DBW) up to 64 bits
+// without triggering runtime reallocation, device stalls, or descriptor set rebinding during training.
+// Note: While packed representation saves bandwidth, physical GPU buffer capacity does not shrink to 2-bit or 4-bit sizes.
+//
+// Memory Residency Scope:
+// Buffers are allocated via CreateHostCoherentBuffer requesting VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT.
+// On discrete GPUs with ReBAR, this resides in host-visible device local memory; on integrated GPUs or systems without ReBAR,
+// it uses unified system memory directly addressable by the GPU compute queue.
+// Model parameters, gradients, and momentum velocities remain resident across iterations;
+// inputs and intermediate layer activations currently travel per-batch between Go slices and temporary GPU storage buffers.
 type PersistentGpuTensor struct {
 	hw        *HardwareContext
 	tensor    *DynamicBitTensor

@@ -437,6 +437,9 @@ func (b *GpuBuffer) SetActiveSize(size uint64) error {
 	if b.isFreed || b.mapped == nil {
 		return errors.New("gpu buffer memory is not mapped or has been freed")
 	}
+	if !b.inUse {
+		return errors.New("cannot set active size: buffer is not in use (returned to pool)")
+	}
 	if size > b.capacity {
 		return fmt.Errorf("active size %d exceeds buffer capacity %d", size, b.capacity)
 	}
@@ -444,7 +447,11 @@ func (b *GpuBuffer) SetActiveSize(size uint64) error {
 	return nil
 }
 
-// CreateHostCoherentBuffer allocates a host-visible, host-coherent buffer (Zero Copy).
+// CreateHostCoherentBuffer allocates a host-visible, host-coherent storage buffer.
+// This memory type allows the CPU host to map and read/write buffer data without explicit flush/invalidate calls,
+// while being directly accessible by GPU compute shaders without intermediate staging buffers.
+// Note: Depending on the target hardware architecture, this memory resides in host-visible device memory
+// (e.g. discrete GPUs with ReBAR) or unified host system memory (e.g. integrated GPUs or discrete GPUs without ReBAR).
 func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, error) {
 	bci := VkBufferCreateInfo{
 		SType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -516,6 +523,9 @@ func (b *GpuBuffer) WriteInt32(data []int32) error {
 	if b.isFreed || b.mapped == nil {
 		return errors.New("gpu buffer memory is not mapped or has been freed")
 	}
+	if !b.inUse {
+		return errors.New("cannot write to buffer: buffer is not in use (returned to pool)")
+	}
 	reqBytes := uint64(len(data) * 4)
 	if reqBytes > b.capacity {
 		return fmt.Errorf("buffer overflow: writing %d int32 elements (%d bytes) exceeds buffer capacity of %d bytes", len(data), reqBytes, b.capacity)
@@ -538,6 +548,9 @@ func (b *GpuBuffer) WriteUint32(data []uint32) error {
 	if b.isFreed || b.mapped == nil {
 		return errors.New("gpu buffer memory is not mapped or has been freed")
 	}
+	if !b.inUse {
+		return errors.New("cannot write to buffer: buffer is not in use (returned to pool)")
+	}
 	reqBytes := uint64(len(data) * 4)
 	if reqBytes > b.capacity {
 		return fmt.Errorf("buffer overflow: writing %d uint32 elements (%d bytes) exceeds buffer capacity of %d bytes", len(data), reqBytes, b.capacity)
@@ -559,6 +572,9 @@ func (b *GpuBuffer) WriteInt64(data []int64) error {
 	defer b.mu.Unlock()
 	if b.isFreed || b.mapped == nil {
 		return errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	if !b.inUse {
+		return errors.New("cannot write to buffer: buffer is not in use (returned to pool)")
 	}
 	reqBytes := uint64(len(data) * 8)
 	if reqBytes > b.capacity {
@@ -584,6 +600,9 @@ func (b *GpuBuffer) ReadInt32(count int) ([]int32, error) {
 	defer b.mu.Unlock()
 	if b.isFreed || b.mapped == nil {
 		return nil, errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	if !b.inUse {
+		return nil, errors.New("cannot read from buffer: buffer is not in use (returned to pool)")
 	}
 	reqBytes := uint64(count * 4)
 	if reqBytes > b.capacity {
@@ -611,6 +630,9 @@ func (b *GpuBuffer) ReadUint32(count int) ([]uint32, error) {
 	if b.isFreed || b.mapped == nil {
 		return nil, errors.New("gpu buffer memory is not mapped or has been freed")
 	}
+	if !b.inUse {
+		return nil, errors.New("cannot read from buffer: buffer is not in use (returned to pool)")
+	}
 	reqBytes := uint64(count * 4)
 	if reqBytes > b.capacity {
 		return nil, fmt.Errorf("buffer read bounds error: reading %d uint32 elements (%d bytes) exceeds buffer capacity of %d bytes", count, reqBytes, b.capacity)
@@ -636,6 +658,9 @@ func (b *GpuBuffer) ReadInt64(count int) ([]int64, error) {
 	defer b.mu.Unlock()
 	if b.isFreed || b.mapped == nil {
 		return nil, errors.New("gpu buffer memory is not mapped or has been freed")
+	}
+	if !b.inUse {
+		return nil, errors.New("cannot read from buffer: buffer is not in use (returned to pool)")
 	}
 	reqBytes := uint64(count * 8)
 	if reqBytes > b.capacity {

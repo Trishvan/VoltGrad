@@ -544,12 +544,29 @@ func (k *ComputeKernel) DispatchProfiled(buffers []*GpuBuffer, pushData unsafe.P
 }
 
 // Close releases all Vulkan resources associated with this kernel.
+// It guarantees device completion before destroying pipelines, descriptor pools, and command pools,
+// even when an ordinary fence wait times out.
 func (k *ComputeKernel) Close() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
 	if k.inFlight && k.fence != 0 {
-		_ = k.waitInFlightLocked(1000000000)
+		if err := k.waitInFlightLocked(1000000000); err != nil {
+			// Ordinary fence wait timed out or failed; ensure full queue/device idle before destroying in-use resources
+			if k.hw != nil {
+				queueWaitIdle := k.hw.getProc("vkQueueWaitIdle")
+				if queueWaitIdle != 0 && k.hw.queue != 0 {
+					vkSyscall(queueWaitIdle, k.hw.queue)
+				} else {
+					devWaitIdle := k.hw.getProc("vkDeviceWaitIdle")
+					if devWaitIdle != 0 && k.hw.device != 0 {
+						vkSyscall(devWaitIdle, k.hw.device)
+					}
+				}
+			}
+			k.inFlight = false
+			k.completedSeq = k.seq
+		}
 	}
 
 	if k.queryPool != 0 {

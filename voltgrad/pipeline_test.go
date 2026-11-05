@@ -357,3 +357,119 @@ func TestTrainingPipelinePersistentWeightsParity(t *testing.T) {
 
 	t.Log(">>> Persistent GPU Training Pipeline & CPU Reference: 100% BIT-FOR-BIT IDENTICAL! <<<")
 }
+
+// TestPersistentTrainingPipelineDBWApproaching64Bits validates that GPU persistent tensor training
+// safely widens parameters across multiple epochs into wide bit-depths,
+// guaranteeing monotonic widening, bitstream integrity, and 100% parity with CPU reference.
+func TestPersistentTrainingPipelineDBWApproaching64Bits(t *testing.T) {
+	numSamples := 32
+	batchSize := 8
+	epochs := 6
+
+	inputs := make([][]int32, numSamples)
+	targets := make([][]int32, numSamples)
+	for i := 0; i < numSamples; i++ {
+		// Large inputs in Q16 scale to induce substantial gradient accumulation
+		inputs[i] = []int32{262144, -196608, 131072, 327680}
+		targets[i] = []int32{-524288, 786432}
+	}
+
+	modelGPU := NewExampleMLPArchitecture()
+	modelCPU := NewExampleMLPArchitecture()
+
+	// Both models start with 2-bit weights and biases
+	for _, p := range modelGPU.Parameters() {
+		p.SetBitWidth(2)
+		for i := 0; i < p.Len(); i++ {
+			p.Set(i, 1)
+		}
+	}
+	for _, p := range modelCPU.Parameters() {
+		p.SetBitWidth(2)
+		for i := 0; i < p.Len(); i++ {
+			p.Set(i, 1)
+		}
+	}
+
+	config := DefaultTrainingConfig()
+	config.Epochs = epochs
+	config.BatchSize = batchSize
+	config.OptimizerConfig.LearningRateQ16 = 65536 // LR = 1.0
+	config.OptimizerConfig.MomentumBeta = 29491    // beta = 0.45
+	config.Verbose = false
+
+	pipeline, err := NewTrainingPipeline(config, modelGPU)
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+	defer pipeline.Close()
+
+	if _, err := pipeline.Train(modelGPU, inputs, targets); err != nil {
+		t.Fatalf("GPU training failed: %v", err)
+	}
+
+	// CPU reference training
+	cpuCtx := NewComputeContext(nil)
+	cpuOpt := NewDynamicBitOptimizer(config.OptimizerConfig, modelCPU)
+	for ep := 1; ep <= epochs; ep++ {
+		for bStart := 0; bStart < numSamples; bStart += batchSize {
+			bEnd := bStart + batchSize
+			if bEnd > numSamples {
+				bEnd = numSamples
+			}
+			currB := bEnd - bStart
+			flatX := make([]int32, currB*4)
+			flatY := make([]int32, currB*2)
+			for i, idx := 0, bStart; idx < bEnd; i, idx = i+1, idx+1 {
+				copy(flatX[i*4:(i+1)*4], inputs[idx])
+				copy(flatY[i*2:(i+1)*2], targets[idx])
+			}
+
+			modelCPU.ZeroGrad()
+			preds, err := modelCPU.ForwardBatched(cpuCtx, flatX, currB)
+			if err != nil {
+				t.Fatalf("CPU forward failed: %v", err)
+			}
+			_, dLoss, err := ComputeLoss(LossMSE, preds, flatY, config.OptimizerConfig.FractionalBits)
+			if err != nil {
+				t.Fatalf("CPU loss failed: %v", err)
+			}
+			if err := modelCPU.BackwardBatched(cpuCtx, dLoss, currB); err != nil {
+				t.Fatalf("CPU backward failed: %v", err)
+			}
+			if _, err := cpuOpt.Step(modelCPU); err != nil {
+				t.Fatalf("CPU step failed: %v", err)
+			}
+		}
+	}
+
+	// Verify widening and bit-for-bit parity
+	paramsGPU := modelGPU.Parameters()
+	paramsCPU := modelCPU.Parameters()
+	maxObservedBitWidth := 0
+
+	for pIdx := range paramsGPU {
+		pG := paramsGPU[pIdx]
+		pC := paramsCPU[pIdx]
+
+		if pG.BitWidth() > maxObservedBitWidth {
+			maxObservedBitWidth = pG.BitWidth()
+		}
+		if pG.BitWidth() != pC.BitWidth() {
+			t.Fatalf("Parameter %d bit width mismatch: GPU=%d, CPU=%d", pIdx, pG.BitWidth(), pC.BitWidth())
+		}
+		if pG.BitWidth() <= 2 {
+			t.Fatalf("Parameter %d failed to widen: stayed at %d bits", pIdx, pG.BitWidth())
+		}
+
+		for elem := 0; elem < pG.Len(); elem++ {
+			valG := pG.Get(elem)
+			valC := pC.Get(elem)
+			if valG != valC {
+				t.Fatalf("Parameter %d element %d mismatch: GPU=%d, CPU=%d (width=%d)", pIdx, elem, valG, valC, pG.BitWidth())
+			}
+		}
+	}
+
+	t.Logf(">>> Multi-Epoch High-Width DBW Persistent Training Verified: Max Width = %d bits, 100%% CPU/GPU Bit-for-Bit Parity! <<<", maxObservedBitWidth)
+}

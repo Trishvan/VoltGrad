@@ -17,7 +17,9 @@ func BenchmarkCPUMatMul(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = MatMulVec64(w, x, 16)
+		if _, err := MatMulVec64(w, x, 16); err != nil {
+			b.Fatalf("MatMulVec64 failed: %v", err)
+		}
 	}
 }
 
@@ -46,7 +48,9 @@ func BenchmarkGPUMatMul(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gpu.MatMulForward(w, x, nil, 16)
+		if _, err := gpu.MatMulForward(w, x, nil, 16); err != nil {
+			b.Fatalf("MatMulForward failed: %v", err)
+		}
 	}
 }
 
@@ -76,7 +80,9 @@ func BenchmarkBatchedGEMM(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gpu.MatMulBatchedForward(w, x, batchSize, nil, 16)
+		if _, err := gpu.MatMulBatchedForward(w, x, batchSize, nil, 16); err != nil {
+			b.Fatalf("MatMulBatchedForward failed: %v", err)
+		}
 	}
 }
 
@@ -102,7 +108,9 @@ func BenchmarkDBWOptimizerStep(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gpu.OptimizerStep(p, g, v, config)
+		if _, err := gpu.OptimizerStep(p, g, v, config); err != nil {
+			b.Fatalf("OptimizerStep failed: %v", err)
+		}
 	}
 }
 
@@ -123,8 +131,12 @@ func BenchmarkPersistentGpuTensorSync(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = pt.SyncToGPU()
-		_ = pt.SyncToHost()
+		if err := pt.SyncToGPU(); err != nil {
+			b.Fatalf("SyncToGPU failed: %v", err)
+		}
+		if err := pt.SyncToHost(); err != nil {
+			b.Fatalf("SyncToHost failed: %v", err)
+		}
 	}
 }
 
@@ -159,7 +171,9 @@ func BenchmarkMatMulForwardResident(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gpu.MatMulForwardResident(pt.BufferPacked(), nil, x, outDim, inDim, w.BitWidth(), 16)
+		if _, err := gpu.MatMulForwardResident(pt.BufferPacked(), nil, x, outDim, inDim, w.BitWidth(), 16); err != nil {
+			b.Fatalf("MatMulForwardResident failed: %v", err)
+		}
 	}
 }
 
@@ -195,7 +209,9 @@ func BenchmarkBatchedGEMMResident(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gpu.MatMulBatchedForwardResident(pt.BufferPacked(), nil, x, batchSize, outDim, inDim, w.BitWidth(), 16)
+		if _, err := gpu.MatMulBatchedForwardResident(pt.BufferPacked(), nil, x, batchSize, outDim, inDim, w.BitWidth(), 16); err != nil {
+			b.Fatalf("MatMulBatchedForwardResident failed: %v", err)
+		}
 	}
 }
 
@@ -224,7 +240,9 @@ func BenchmarkDBWOptimizerStepResident(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gpu.OptimizerStepResident(pt.BufferInt64(), pt.BufferGrad(), pt.BufferVel(), pt.BufferPacked(), n, 4, config)
+		if _, err := gpu.OptimizerStepResident(pt.BufferInt64(), pt.BufferGrad(), pt.BufferVel(), pt.BufferPacked(), n, 4, config); err != nil {
+			b.Fatalf("OptimizerStepResident failed: %v", err)
+		}
 	}
 }
 
@@ -249,10 +267,20 @@ func BenchmarkTrainingStepCPU(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		model.ZeroGrad()
-		preds, _ := model.ForwardBatched(cpuCtx, flatX, batchSize)
-		_, dLoss, _ := ComputeLoss(LossMSE, preds, flatY, config.OptimizerConfig.FractionalBits)
-		_ = model.BackwardBatched(cpuCtx, dLoss, batchSize)
-		_, _ = opt.Step(model)
+		preds, err := model.ForwardBatched(cpuCtx, flatX, batchSize)
+		if err != nil {
+			b.Fatalf("ForwardBatched failed: %v", err)
+		}
+		_, dLoss, err := ComputeLoss(LossMSE, preds, flatY, config.OptimizerConfig.FractionalBits)
+		if err != nil {
+			b.Fatalf("ComputeLoss failed: %v", err)
+		}
+		if err := model.BackwardBatched(cpuCtx, dLoss, batchSize); err != nil {
+			b.Fatalf("BackwardBatched failed: %v", err)
+		}
+		if _, err := opt.Step(model); err != nil {
+			b.Fatalf("Step failed: %v", err)
+		}
 	}
 }
 
@@ -295,10 +323,20 @@ func BenchmarkTrainingStepGPUPersistent(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		model.ZeroGrad()
-		preds, _ := model.ForwardBatched(ctx, flatX, batchSize)
-		_, dLoss, _ := gpu.MSELoss(preds, flatY, config.OptimizerConfig.FractionalBits)
-		_ = model.BackwardBatched(ctx, dLoss, batchSize)
-		_, _ = opt.StepGPU(gpu, model)
+		preds, err := model.ForwardBatched(ctx, flatX, batchSize)
+		if err != nil {
+			b.Fatalf("ForwardBatched failed: %v", err)
+		}
+		_, dLoss, err := gpu.MSELoss(preds, flatY, config.OptimizerConfig.FractionalBits)
+		if err != nil {
+			b.Fatalf("MSELoss failed: %v", err)
+		}
+		if err := model.BackwardBatched(ctx, dLoss, batchSize); err != nil {
+			b.Fatalf("BackwardBatched failed: %v", err)
+		}
+		if _, err := opt.StepGPU(gpu, model); err != nil {
+			b.Fatalf("StepGPU failed: %v", err)
+		}
 	}
 }
 
@@ -469,7 +507,9 @@ func BenchmarkBatchedGEMM_Large_128x128_Transient(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gpu.MatMulBatchedForward(w, x, batchSize, nil, 16)
+		if _, err := gpu.MatMulBatchedForward(w, x, batchSize, nil, 16); err != nil {
+			b.Fatalf("MatMulBatchedForward failed: %v", err)
+		}
 	}
 }
 
@@ -505,7 +545,9 @@ func BenchmarkBatchedGEMM_Large_128x128_Resident(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gpu.MatMulBatchedForwardResident(pt.BufferPacked(), nil, x, batchSize, outDim, inDim, w.BitWidth(), 16)
+		if _, err := gpu.MatMulBatchedForwardResident(pt.BufferPacked(), nil, x, batchSize, outDim, inDim, w.BitWidth(), 16); err != nil {
+			b.Fatalf("MatMulBatchedForwardResident failed: %v", err)
+		}
 	}
 }
 
@@ -541,7 +583,9 @@ func BenchmarkBatchedGEMM_Large_128x128_Resident_B128(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gpu.MatMulBatchedForwardResident(pt.BufferPacked(), nil, x, batchSize, outDim, inDim, w.BitWidth(), 16)
+		if _, err := gpu.MatMulBatchedForwardResident(pt.BufferPacked(), nil, x, batchSize, outDim, inDim, w.BitWidth(), 16); err != nil {
+			b.Fatalf("MatMulBatchedForwardResident failed: %v", err)
+		}
 	}
 }
 
@@ -566,10 +610,20 @@ func BenchmarkTrainingStep_LargeModel_CPU(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		model.ZeroGrad()
-		preds, _ := model.ForwardBatched(cpuCtx, flatX, batchSize)
-		_, dLoss, _ := ComputeLoss(LossMSE, preds, flatY, config.OptimizerConfig.FractionalBits)
-		_ = model.BackwardBatched(cpuCtx, dLoss, batchSize)
-		_, _ = opt.Step(model)
+		preds, err := model.ForwardBatched(cpuCtx, flatX, batchSize)
+		if err != nil {
+			b.Fatalf("ForwardBatched failed: %v", err)
+		}
+		_, dLoss, err := ComputeLoss(LossMSE, preds, flatY, config.OptimizerConfig.FractionalBits)
+		if err != nil {
+			b.Fatalf("ComputeLoss failed: %v", err)
+		}
+		if err := model.BackwardBatched(cpuCtx, dLoss, batchSize); err != nil {
+			b.Fatalf("BackwardBatched failed: %v", err)
+		}
+		if _, err := opt.Step(model); err != nil {
+			b.Fatalf("Step failed: %v", err)
+		}
 	}
 }
 
@@ -612,9 +666,19 @@ func BenchmarkTrainingStep_LargeModel_GPUPersistent(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		model.ZeroGrad()
-		preds, _ := model.ForwardBatched(ctx, flatX, batchSize)
-		_, dLoss, _ := gpu.MSELoss(preds, flatY, config.OptimizerConfig.FractionalBits)
-		_ = model.BackwardBatched(ctx, dLoss, batchSize)
-		_, _ = opt.StepGPU(gpu, model)
+		preds, err := model.ForwardBatched(ctx, flatX, batchSize)
+		if err != nil {
+			b.Fatalf("ForwardBatched failed: %v", err)
+		}
+		_, dLoss, err := gpu.MSELoss(preds, flatY, config.OptimizerConfig.FractionalBits)
+		if err != nil {
+			b.Fatalf("MSELoss failed: %v", err)
+		}
+		if err := model.BackwardBatched(ctx, dLoss, batchSize); err != nil {
+			b.Fatalf("BackwardBatched failed: %v", err)
+		}
+		if _, err := opt.StepGPU(gpu, model); err != nil {
+			b.Fatalf("StepGPU failed: %v", err)
+		}
 	}
 }

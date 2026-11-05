@@ -384,7 +384,7 @@ func (p *BufferPool) Put(buf *GpuBuffer)
 func (p *BufferPool) Clear()
 ```
 
-Buckets pool buffers by power-of-two capacity (minimum 256 bytes). `Get` returns any pooled buffer with `Capacity() >= size`; `Put` returns a buffer for reuse; `Clear` releases the whole pool. All pool operations are mutex-guarded.
+Buckets pool buffers by power-of-two capacity (minimum 256 bytes). `Get` returns any pooled buffer with `Capacity() >= size`; `Put` returns a buffer for reuse, relinquishing caller ownership (subsequent reads, writes, or size alterations on the relinquished buffer fail with an error); `Clear` atomically drains and releases all pooled buffers from memory in a thread-safe manner without deadlocks or races. All pool operations are mutex-guarded.
 
 ```go
 type PersistentGpuTensor struct { /* opaque */ }
@@ -393,6 +393,10 @@ func NewPersistentGpuTensor(hw *HardwareContext, t *DynamicBitTensor) (*Persiste
 
 func (pt *PersistentGpuTensor) Allocate() error
 func (pt *PersistentGpuTensor) Buffer() *GpuBuffer
+func (pt *PersistentGpuTensor) BufferPacked() *GpuBuffer
+func (pt *PersistentGpuTensor) BufferInt64() *GpuBuffer
+func (pt *PersistentGpuTensor) BufferGrad() *GpuBuffer
+func (pt *PersistentGpuTensor) BufferVel() *GpuBuffer
 func (pt *PersistentGpuTensor) Free()
 func (pt *PersistentGpuTensor) Tensor() *DynamicBitTensor
 
@@ -402,7 +406,7 @@ func (pt *PersistentGpuTensor) SyncToGPU() error
 func (pt *PersistentGpuTensor) SyncToHost() error
 ```
 
-A `PersistentGpuTensor` keeps a mirror of a `DynamicBitTensor` resident in GPU memory across training iterations, eliminating repeated host-to-device uploads and device-to-host readbacks on every forward/backward/optimizer step. The constructor validates its arguments, provisions the resident buffer, and uploads the tensor's current packed contents; `Allocate` provisions it again explicitly after a `Free`. `SyncToGPU` re-pushes the CPU tensor's current values; kernels that mutate the resident buffer in place call `MarkDirty`, and `SyncToHost` reads the GPU state back into the CPU tensor at the tensor's current bit-width. All operations are mutex-guarded. `LinearLayer.BindGPU` wires exactly this mechanism to a layer's weights and biases (exposed as `GpuWeight` / `GpuBias`).
+A `PersistentGpuTensor` keeps a mirror of a `DynamicBitTensor` persistently allocated in host-coherent GPU memory across training iterations, eliminating repeated host-to-device uploads and device-to-host readbacks on every forward/backward/optimizer step. It allocates 4 storage buffers (`bufPacked`, `bufInt64`, `bufGrad`, `bufVel`), preallocating approximately 32 bytes per parameter element (8 bytes per buffer) to provide headroom for arbitrary Dynamic Bit Widening (DBW) up to 64 bits without runtime reallocation or device stalls. Memory is allocated via `CreateHostCoherentBuffer` requesting host-visible, host-coherent memory (residing in ReBAR device memory or unified host memory depending on the target GPU architecture). Parameters, gradients, and velocities remain resident across iterations, while inputs and intermediate layer activations currently travel per-batch between Go slices and temporary GPU storage buffers. All operations are mutex-guarded. `LinearLayer.BindGPU` wires this mechanism to a layer's weights and biases (exposed as `GpuWeight` / `GpuBias`).
 
 ## 10. Kernels and pipelines
 
