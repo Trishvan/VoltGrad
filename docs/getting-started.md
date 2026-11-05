@@ -1,3 +1,7 @@
+---
+description: Install VoltGrad and train neural networks in Go using Vulkan GPU compute. Explore Q16 fixed-point arithmetic, Dynamic Bit Widening, hardware requirements, and your first training pipeline.
+---
+
 # Getting Started
 
 ## 1. Overview

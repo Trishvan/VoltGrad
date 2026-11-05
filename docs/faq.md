@@ -1,3 +1,7 @@
+---
+description: Frequently asked questions about VoltGrad, Vulkan hardware requirements (shaderInt64), platform support, Dynamic Bit Widening, and troubleshooting.
+---
+
 # FAQ
 
 ## Hardware and platform

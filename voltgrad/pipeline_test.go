@@ -452,14 +452,15 @@ func TestPersistentTrainingPipelineDBWApproaching64Bits(t *testing.T) {
 		pG := paramsGPU[pIdx]
 		pC := paramsCPU[pIdx]
 
+		t.Logf("Parameter %d final bit width: GPU=%d, CPU=%d", pIdx, pG.BitWidth(), pC.BitWidth())
 		if pG.BitWidth() > maxObservedBitWidth {
 			maxObservedBitWidth = pG.BitWidth()
 		}
 		if pG.BitWidth() != pC.BitWidth() {
 			t.Fatalf("Parameter %d bit width mismatch: GPU=%d, CPU=%d", pIdx, pG.BitWidth(), pC.BitWidth())
 		}
-		if pG.BitWidth() <= 2 {
-			t.Fatalf("Parameter %d failed to widen: stayed at %d bits", pIdx, pG.BitWidth())
+		if pG.BitWidth() < 18 {
+			t.Fatalf("Parameter %d failed to widen sufficiently: got %d bits, expected >= 18 bits", pIdx, pG.BitWidth())
 		}
 
 		for elem := 0; elem < pG.Len(); elem++ {
@@ -469,6 +470,13 @@ func TestPersistentTrainingPipelineDBWApproaching64Bits(t *testing.T) {
 				t.Fatalf("Parameter %d element %d mismatch: GPU=%d, CPU=%d (width=%d)", pIdx, elem, valG, valC, pG.BitWidth())
 			}
 		}
+	}
+
+	if maxObservedBitWidth < 38 {
+		t.Fatalf("Expected max bit width >= 38 bits, got %d bits", maxObservedBitWidth)
+	}
+	if maxObservedBitWidth <= 32 {
+		t.Fatalf("Test failed to exercise >32-bit multi-word DBW packing: max width = %d bits", maxObservedBitWidth)
 	}
 
 	t.Logf(">>> Multi-Epoch High-Width DBW Persistent Training Verified: Max Width = %d bits, 100%% CPU/GPU Bit-for-Bit Parity! <<<", maxObservedBitWidth)

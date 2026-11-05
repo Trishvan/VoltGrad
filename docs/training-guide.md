@@ -1,3 +1,7 @@
+---
+description: Comprehensive guide to configuring VoltGrad training runs, batching, fixed-point datasets, loss functions, optimizers, and convergence monitoring.
+---
+
 # Training Guide
 
 This guide covers the knobs that shape a training run: configuration validation, data layout, loss functions, optimizers, and the monitoring output. Interfaces are documented in the [API Reference](api-reference.md); a first walkthrough is in the [Tutorial](tutorial.md).

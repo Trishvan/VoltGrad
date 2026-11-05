@@ -477,7 +477,9 @@ func BenchmarkBatchedGEMM_Large_128x128_CPU(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = layer.ForwardBatched(x, batchSize, 16)
+		if _, err := layer.ForwardBatched(x, batchSize, 16); err != nil {
+			b.Fatalf("layer.ForwardBatched failed: %v", err)
+		}
 	}
 }
 

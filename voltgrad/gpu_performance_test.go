@@ -602,10 +602,14 @@ func TestComputeKernelCloseUnderInFlightCompletion(t *testing.T) {
 	}
 
 	// Close immediately while execution may be in flight
-	kernel.Close()
+	if err := kernel.Close(); err != nil {
+		t.Fatalf("kernel.Close failed: %v", err)
+	}
 
 	// Double Close must also be a safe no-op
-	kernel.Close()
+	if err := kernel.Close(); err != nil {
+		t.Fatalf("Second kernel.Close failed: %v", err)
+	}
 
 	t.Log(">>> ComputeKernel Close Under In-Flight Completion VERIFIED! <<<")
 }

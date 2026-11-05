@@ -350,17 +350,25 @@ func (c *HardwareContext) findMemoryType(typeBits uint32, properties uint32) int
 	return -1
 }
 
-// Close releases the Vulkan instance and logical device.
-func (c *HardwareContext) Close() {
+// Close releases the Vulkan instance, logical device, and allocated memory pools.
+// It explicitly waits for device idle (vkDeviceWaitIdle) before clearing pooled buffers
+// or destroying device/instance handles, preventing in-flight use-after-free conditions.
+func (c *HardwareContext) Close() error {
+	var closeErr error
+	if c.device != 0 {
+		waitIdle := c.getProc("vkDeviceWaitIdle")
+		if waitIdle != 0 {
+			r := vkSyscall(waitIdle, c.device)
+			if r != 0 {
+				closeErr = fmt.Errorf("vkDeviceWaitIdle failed on shutdown: %d", r)
+			}
+		}
+	}
 	if c.pool != nil {
 		c.pool.Clear()
 		c.pool = nil
 	}
 	if c.device != 0 {
-		waitIdle := c.getProc("vkDeviceWaitIdle")
-		if waitIdle != 0 {
-			vkSyscall(waitIdle, c.device)
-		}
 		destroyDevice := c.getProc("vkDestroyDevice")
 		if destroyDevice != 0 {
 			vkSyscall(destroyDevice, c.device, 0)
@@ -378,6 +386,7 @@ func (c *HardwareContext) Close() {
 		c.loader.close()
 		c.loader = nil
 	}
+	return closeErr
 }
 
 // BufferPool returns the memory buffer pool associated with this hardware context.

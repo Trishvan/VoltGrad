@@ -1185,50 +1185,30 @@ func (e *GpuEngine) OptimizerStepResident(bufWeights, bufGrads, bufVels, bufPack
 	return targetBitWidth, nil
 }
 
-// Close terminates all compute kernels.
-func (e *GpuEngine) Close() {
-	if e.kernelMatMulFwd != nil {
-		e.kernelMatMulFwd.Close()
-		e.kernelMatMulFwd = nil
+// Close terminates all compute kernels and returns any errors encountered during teardown.
+func (e *GpuEngine) Close() error {
+	var errs []error
+	closeKernel := func(k **ComputeKernel) {
+		if *k != nil {
+			if err := (*k).Close(); err != nil {
+				errs = append(errs, err)
+			}
+			*k = nil
+		}
 	}
-	if e.kernelMatMulBwdDx != nil {
-		e.kernelMatMulBwdDx.Close()
-		e.kernelMatMulBwdDx = nil
+	closeKernel(&e.kernelMatMulFwd)
+	closeKernel(&e.kernelMatMulBwdDx)
+	closeKernel(&e.kernelMatMulBwdDw)
+	closeKernel(&e.kernelMatMulBatchedFwd)
+	closeKernel(&e.kernelMatMulBatchedBwdDx)
+	closeKernel(&e.kernelMatMulBatchedBwdDw)
+	closeKernel(&e.kernelReLUFwd)
+	closeKernel(&e.kernelReLUBwd)
+	closeKernel(&e.kernelLossMSE)
+	closeKernel(&e.kernelOptimizer)
+	closeKernel(&e.kernelRepack)
+	if len(errs) > 0 {
+		return fmt.Errorf("errors closing compute kernels: %v", errs)
 	}
-	if e.kernelMatMulBwdDw != nil {
-		e.kernelMatMulBwdDw.Close()
-		e.kernelMatMulBwdDw = nil
-	}
-	if e.kernelMatMulBatchedFwd != nil {
-		e.kernelMatMulBatchedFwd.Close()
-		e.kernelMatMulBatchedFwd = nil
-	}
-	if e.kernelMatMulBatchedBwdDx != nil {
-		e.kernelMatMulBatchedBwdDx.Close()
-		e.kernelMatMulBatchedBwdDx = nil
-	}
-	if e.kernelMatMulBatchedBwdDw != nil {
-		e.kernelMatMulBatchedBwdDw.Close()
-		e.kernelMatMulBatchedBwdDw = nil
-	}
-	if e.kernelReLUFwd != nil {
-		e.kernelReLUFwd.Close()
-		e.kernelReLUFwd = nil
-	}
-	if e.kernelReLUBwd != nil {
-		e.kernelReLUBwd.Close()
-		e.kernelReLUBwd = nil
-	}
-	if e.kernelLossMSE != nil {
-		e.kernelLossMSE.Close()
-		e.kernelLossMSE = nil
-	}
-	if e.kernelOptimizer != nil {
-		e.kernelOptimizer.Close()
-		e.kernelOptimizer = nil
-	}
-	if e.kernelRepack != nil {
-		e.kernelRepack.Close()
-		e.kernelRepack = nil
-	}
+	return nil
 }

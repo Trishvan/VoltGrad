@@ -1,3 +1,7 @@
+---
+description: VoltGrad is a self-contained Go machine-learning training library running on Vulkan GPUs with Q16 fixed-point arithmetic and Dynamic Bit Widening.
+---
+
 # VoltGrad Documentation
 
 VoltGrad is a self-contained Go library for training neural networks on Vulkan-capable GPUs using fixed-point integer arithmetic and Dynamic Bit Widening (DBW). No CGO, no dependencies on native ML runtimes.

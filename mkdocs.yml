@@ -9,6 +9,8 @@ repo_name: Trishvan/VoltGrad
 
 theme:
   name: material
+  favicon: assets/favicon.png
+  logo: assets/favicon.png
   language: en
   features:
     - content.code.copy
@@ -27,6 +29,7 @@ theme:
         name: Switch to light mode
 
 markdown_extensions:
+  - meta
   - admonition
   - pymdownx.highlight
   - pymdownx.inlinehilite

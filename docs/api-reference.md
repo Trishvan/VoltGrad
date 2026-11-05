@@ -1,3 +1,7 @@
+---
+description: Complete API reference for VoltGrad in Go, covering tensors, layers, compute contexts, GPU hardware dispatch, losses, and optimizers.
+---
+
 # API Reference
 
 Package `voltgrad` — import path `github.com/Trishvan/VoltGrad/voltgrad`.
@@ -328,7 +332,7 @@ func (c *HardwareContext) DeviceReport() DeviceReport
 func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, error)
 func (c *HardwareContext) GetPooledBuffer(size uint64) (*GpuBuffer, error)
 func (c *HardwareContext) BufferPool() *BufferPool
-func (c *HardwareContext) Close()
+func (c *HardwareContext) Close() error
 ```
 
 Device discovery enumerates all physical devices, requires a compute queue and the `shaderInt64` feature, and selects the best by type score (discrete > integrated > virtual > CPU). `CreateHostCoherentBuffer` maps host-visible + host-coherent memory (zero-copy CPU/GPU sharing); failures roll back all intermediate Vulkan resources.
@@ -426,7 +430,7 @@ type ComputeKernel struct { /* opaque */ }
 
 func NewComputeKernel(hw *HardwareContext, spv []byte, numBindings int, pushSize uint32) (*ComputeKernel, error)
 func (k *ComputeKernel) Dispatch(buffers []*GpuBuffer, pushData unsafe.Pointer, pushSize uint32, workgroups uint32) error
-func (k *ComputeKernel) Close()
+func (k *ComputeKernel) Close() error
 ```
 
 `ComputeKernel` is the general form: any number of storage-buffer bindings and a `pushSize`-byte push constant block, with synchronous or asynchronous execution.
@@ -455,7 +459,7 @@ func (t *ExecutionToken) Wait(timeoutNs uint64) error // e.g. 2_000_000_000 for 
 type GpuEngine struct { /* opaque */ }
 
 func NewGpuEngine(hw *HardwareContext) (*GpuEngine, error) // compiles all bundled NN kernels
-func (e *GpuEngine) Close()
+func (e *GpuEngine) Close() error
 func (e *GpuEngine) DeviceReport() DeviceReport
 ```
 

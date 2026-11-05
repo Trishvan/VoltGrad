@@ -415,3 +415,45 @@ func TestBufferPoolClearConcurrentReleaseSafety(t *testing.T) {
 	pool.Clear()
 	t.Log(">>> BufferPool Concurrent Clear and Release Safety VERIFIED! <<<")
 }
+
+// TestHardwareContextCloseIdlesBeforeBufferClear verifies that HardwareContext.Close()
+// waits for device idle before clearing pooled buffers and handles double-close safely.
+func TestHardwareContextCloseIdlesBeforeBufferClear(t *testing.T) {
+	hw, err := NewHardwareContext()
+	if err != nil {
+		t.Skipf("Skipping Vulkan test: %v", err)
+	}
+
+	pool := hw.BufferPool()
+	if pool == nil {
+		t.Fatalf("Expected non-nil BufferPool")
+	}
+
+	// Allocate and return buffers to pool
+	b1, err := pool.Get(256)
+	if err != nil {
+		t.Fatalf("pool.Get(256) failed: %v", err)
+	}
+	b2, err := pool.Get(512)
+	if err != nil {
+		t.Fatalf("pool.Get(512) failed: %v", err)
+	}
+	b1.Release()
+	b2.Release()
+
+	// Close must wait for device idle, clear pool, and return nil error
+	if err := hw.Close(); err != nil {
+		t.Fatalf("hw.Close() failed: %v", err)
+	}
+
+	if hw.BufferPool() != nil {
+		t.Fatalf("Expected BufferPool to be nil after Close()")
+	}
+
+	// Idempotent double close
+	if err := hw.Close(); err != nil {
+		t.Fatalf("Second hw.Close() failed: %v", err)
+	}
+
+	t.Log(">>> HardwareContext Close Device Idle and Pool Clear Safety VERIFIED! <<<")
+}

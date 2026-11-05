@@ -545,24 +545,44 @@ func (k *ComputeKernel) DispatchProfiled(buffers []*GpuBuffer, pushData unsafe.P
 
 // Close releases all Vulkan resources associated with this kernel.
 // It guarantees device completion before destroying pipelines, descriptor pools, and command pools,
-// even when an ordinary fence wait times out.
-func (k *ComputeKernel) Close() {
+// even when an ordinary fence wait times out, and returns an error if queue/device idle fallbacks fail.
+func (k *ComputeKernel) Close() error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
+	var closeErr error
 	if k.inFlight && k.fence != 0 {
 		if err := k.waitInFlightLocked(1000000000); err != nil {
 			// Ordinary fence wait timed out or failed; ensure full queue/device idle before destroying in-use resources
+			var idleErr error
 			if k.hw != nil {
 				queueWaitIdle := k.hw.getProc("vkQueueWaitIdle")
 				if queueWaitIdle != 0 && k.hw.queue != 0 {
-					vkSyscall(queueWaitIdle, k.hw.queue)
+					r := vkSyscall(queueWaitIdle, k.hw.queue)
+					if r != 0 {
+						// Queue wait idle failed; attempt device wait idle fallback
+						devWaitIdle := k.hw.getProc("vkDeviceWaitIdle")
+						if devWaitIdle != 0 && k.hw.device != 0 {
+							rd := vkSyscall(devWaitIdle, k.hw.device)
+							if rd != 0 {
+								idleErr = fmt.Errorf("vkQueueWaitIdle failed with %d; fallback vkDeviceWaitIdle failed with %d", r, rd)
+							}
+						} else {
+							idleErr = fmt.Errorf("vkQueueWaitIdle failed with %d", r)
+						}
+					}
 				} else {
 					devWaitIdle := k.hw.getProc("vkDeviceWaitIdle")
 					if devWaitIdle != 0 && k.hw.device != 0 {
-						vkSyscall(devWaitIdle, k.hw.device)
+						rd := vkSyscall(devWaitIdle, k.hw.device)
+						if rd != 0 {
+							idleErr = fmt.Errorf("vkDeviceWaitIdle failed with %d", rd)
+						}
 					}
 				}
+			}
+			if idleErr != nil {
+				closeErr = fmt.Errorf("kernel in-flight wait timed out (%w) and device idle fallback failed: %w", err, idleErr)
 			}
 			k.inFlight = false
 			k.completedSeq = k.seq
@@ -604,4 +624,5 @@ func (k *ComputeKernel) Close() {
 		vkSyscall(k.hw.getProc("vkDestroyShaderModule"), k.hw.device, uintptr(k.shaderModule), 0)
 		k.shaderModule = 0
 	}
+	return closeErr
 }

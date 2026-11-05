@@ -28,6 +28,9 @@ jobs:
       - name: Run Test Suite
         run: go test -v -count=1 ./...
 
+      - name: Run Test Suite with Go Race Detector
+        run: go test -v -race -count=1 ./voltgrad
+
   verify-shaders-and-cross-build:
     name: Cross-Platform Build & Vulkan Verification
     runs-on: ${{ matrix.os }}
@@ -58,3 +61,6 @@ jobs:
 
       - name: Run Test Suite (includes Lavapipe GPU execution on Ubuntu)
         run: go test -v -count=1 ./...
+
+      - name: Run Test Suite with Go Race Detector
+        run: go test -v -race -count=1 ./voltgrad

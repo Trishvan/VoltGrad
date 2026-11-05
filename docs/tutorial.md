@@ -1,3 +1,7 @@
+---
+description: Step-by-step tutorial for building, training, and evaluating a neural network in Go using VoltGrad, Vulkan GPU compute, and dynamic bit-widened tensors.
+---
+
 # Tutorial: Training Your First Model
 
 This tutorial builds, trains, and inspects a small network from scratch. It assumes the [Getting Started](getting-started.md) requirements are met (Go, a Vulkan device with `shaderInt64`, GPU drivers).
