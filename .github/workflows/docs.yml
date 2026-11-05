@@ -15,6 +15,7 @@ on:
     paths:
       - 'docs/**'
       - 'README.md'
+      - 'CONTRIBUTING.md'
       - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
       - 'voltgrad/shaders/README.md'
@@ -49,6 +50,7 @@ jobs:
       - name: Stage auxiliary pages
         run: |
           cp README.md docs/project-readme.md
+          cp CONTRIBUTING.md docs/contributing.md
           cp voltgrad/shaders/README.md docs/shaders-reference.md
           cp docs/README.md docs/index.md
           rm docs/README.md
@@ -57,15 +59,23 @@ jobs:
         run: |
           sed -i \
             -e 's#](../README.md)#](project-readme.md)#g' \
+            -e 's#](../CONTRIBUTING.md)#](contributing.md)#g' \
             -e 's#](../voltgrad/shaders/README.md)#](shaders-reference.md)#g' \
             docs/*.md
           sed -i \
+            -e 's#](CONTRIBUTING.md)#](contributing.md)#g' \
             -e 's#](voltgrad/shaders/README.md)#](shaders-reference.md)#g' \
             -e 's#](docs/README.md)#](index.md)#g' \
             -e 's#](docs/adr/)#](https://github.com/Trishvan/VoltGrad/tree/main/docs/adr)#g' \
             -e 's#](docs/#](#g' \
             -e 's#](voltgrad/#](https://github.com/Trishvan/VoltGrad/blob/main/voltgrad/#g' \
             docs/project-readme.md
+          sed -i \
+            -e 's#](docs/adr/)#](https://github.com/Trishvan/VoltGrad/tree/main/docs/adr)#g' \
+            -e 's#](docs/#](#g' \
+            -e 's#](voltgrad/#](https://github.com/Trishvan/VoltGrad/blob/main/voltgrad/#g' \
+            -e 's#](README.md)#](project-readme.md)#g' \
+            docs/contributing.md
 
       - name: Build site
         run: mkdocs build --strict --site-dir site

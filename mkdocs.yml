@@ -42,5 +42,6 @@ nav:
   - API Reference: api-reference.md
   - FAQ: faq.md
   - Project README: project-readme.md
+  - Contributing: contributing.md
   - Shader Reference: shaders-reference.md
   - ADR-0001: adr/0001-tensor-wise-dynamic-bit-widening.md
