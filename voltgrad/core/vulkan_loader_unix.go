@@ -1,6 +1,6 @@
 //go:build !windows
 
-package voltgrad
+package core
 
 import (
 	"fmt"

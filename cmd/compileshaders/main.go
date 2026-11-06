@@ -106,9 +106,11 @@ func main() {
 
 	fmt.Printf("Using native shader compiler: %s (%s)\n", compilerType, compilerPath)
 
-	shaderDir := filepath.Join("voltgrad", "shaders")
+	shaderDir := filepath.Join("voltgrad", "core", "shaders")
 	if _, err := os.Stat(shaderDir); os.IsNotExist(err) {
-		if _, err := os.Stat("matmul_forward.comp"); err == nil {
+		if _, err := os.Stat(filepath.Join("voltgrad", "shaders")); err == nil {
+			shaderDir = filepath.Join("voltgrad", "shaders")
+		} else if _, err := os.Stat("matmul_forward.comp"); err == nil {
 			shaderDir = "."
 		} else {
 			fmt.Fprintf(os.Stderr, "Error: Cannot find shaders directory (%s)\n", shaderDir)

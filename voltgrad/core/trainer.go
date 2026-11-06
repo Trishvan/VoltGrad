@@ -1,4 +1,4 @@
-package voltgrad
+package core
 
 import (
 	"fmt"
@@ -140,7 +140,7 @@ func (p *VulkanTrainingPipeline) Train(model ModelArchitecture, inputs [][]int32
 	if p.config.Verbose {
 		devRep := p.hw.DeviceReport()
 		fmt.Printf("========================================================================\n")
-		fmt.Printf("   VULKAN TRAINING PIPELINE — Adaptive, Vendor-Neutral GPU Computing for Go\n")
+		fmt.Printf("   VULKAN TRAINING PIPELINE â€” Adaptive, Vendor-Neutral GPU Computing for Go\n")
 		fmt.Printf("========================================================================\n")
 		if devRep.DeviceName != "" {
 			fmt.Printf(" GPU Device: %s (%s) [%s]\n", devRep.DeviceName, devRep.DeviceType, devRep.VendorName)

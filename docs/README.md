@@ -24,4 +24,4 @@ VoltGrad is a self-contained Go library for training neural networks on Vulkan-c
 - [ADR-0002: Dual-Path Execution](adr/0002-dual-path-execution-and-optional-shaderint64.md) — the architectural decision record for optional shaderInt64 and dual 32-bit/64-bit GPU paths.
 - [ADR-0003: Polyglot Architecture](adr/0003-polyglot-go-rust-execution-runtime.md) — the architectural decision record for the Go-first, Rust-powered execution runtime via purego FFI.
 - [ADR-0004: Language-Independent Engine](adr/0004-language-independent-engine-and-stable-c-abi.md) — the architectural decision record for the stable C-compatible ABI and pluggable backends.
-- [Shader Reference](../voltgrad/shaders/README.md) — the Vulkan compute kernels bundled with the library, and how to recompile them.
+- [Shader Reference](../voltgrad/core/shaders/README.md) — the Vulkan compute kernels bundled with the library, and how to recompile them.

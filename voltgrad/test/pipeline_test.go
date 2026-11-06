@@ -1,8 +1,10 @@
-package voltgrad
+package test
 
 import (
 	"fmt"
 	"testing"
+
+	. "github.com/Trishvan/VoltGrad/voltgrad/core"
 )
 
 // ExampleMLPArchitecture demonstrates how ANY user defines their custom model architecture

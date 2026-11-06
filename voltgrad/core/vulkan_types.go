@@ -1,4 +1,4 @@
-package voltgrad
+package core
 
 import "unsafe"
 

@@ -209,7 +209,7 @@ Conventions for the batched interface:
 - `BackwardBatched` receives the loss gradient for the whole batch in the same layout; it must accumulate into the layer gradient tensors, which the optimizer consumes after the batch.
 - When the model is batched, the trainer computes the loss over the flattened batch in a single call — on the GPU directly for `LossMSE` (`GpuEngine.MSELoss`), otherwise on the CPU — and then runs `BackwardBatched`.
 
-With this interface implemented, the same `pipeline.Train` call trains through the batched GEMM path; nothing else in the setup changes. The complete assembled model (`ExampleMLPArchitecture` in `voltgrad/pipeline_test.go`) is the reference implementation used by the integration test.
+With this interface implemented, the same `pipeline.Train` call trains through the batched GEMM path; nothing else in the setup changes. The complete assembled model (`ExampleMLPArchitecture` in `voltgrad/test/pipeline_test.go`) is the reference implementation used by the integration test.
 
 ## 8. Where to go next
 

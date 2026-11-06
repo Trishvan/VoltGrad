@@ -1,10 +1,12 @@
-package voltgrad
+package test
 
 import (
 	"fmt"
 	"math/rand"
 	"os"
 	"testing"
+
+	. "github.com/Trishvan/VoltGrad/voltgrad/core"
 )
 
 // Test32BitExecutionPathDeviceInitialization verifies that HardwareOptions{Force32Bit: true}
@@ -398,13 +400,13 @@ func TestPersistentTensor32BitVs64BitMemoryFootprint(t *testing.T) {
 		t.Fatalf("Expected pt32.Is64Bit() to be false")
 	}
 	// In 32-bit mode, buffer capacity is len * 4 bytes
-	if pt32.BufferParam().capacity != uint64(numElements*4) {
+	if pt32.BufferParam().Capacity() != uint64(numElements*4) {
 		t.Fatalf("Expected 32-bit persistent buffer capacity %d, got %d",
-			numElements*4, pt32.BufferParam().capacity)
+			numElements*4, pt32.BufferParam().Capacity())
 	}
 
 	t.Logf("32-bit persistent tensor allocated %d bytes/buffer (%d bytes total across 4 buffers)",
-		pt32.BufferParam().capacity, pt32.BufferParam().capacity*4)
+		pt32.BufferParam().Capacity(), pt32.BufferParam().Capacity()*4)
 
 	// If physical GPU supports 64-bit, compare with 64-bit allocation
 	if hw32.HasShaderInt64() {
@@ -423,12 +425,12 @@ func TestPersistentTensor32BitVs64BitMemoryFootprint(t *testing.T) {
 		if !pt64.Is64Bit() {
 			t.Fatalf("Expected pt64.Is64Bit() to be true")
 		}
-		if pt64.BufferParam().capacity != uint64(numElements*8) {
+		if pt64.BufferParam().Capacity() != uint64(numElements*8) {
 			t.Fatalf("Expected 64-bit persistent buffer capacity %d, got %d",
-				numElements*8, pt64.BufferParam().capacity)
+				numElements*8, pt64.BufferParam().Capacity())
 		}
 
-		ratio := float64(pt32.BufferParam().capacity) / float64(pt64.BufferParam().capacity)
+		ratio := float64(pt32.BufferParam().Capacity()) / float64(pt64.BufferParam().Capacity())
 		if ratio != 0.5 {
 			t.Fatalf("Expected 32-bit/64-bit capacity ratio of 0.5 (50%% VRAM reduction), got %f", ratio)
 		}
@@ -478,8 +480,8 @@ func Test32BitOptimizerParity(t *testing.T) {
 			}
 
 			// Single param step on CPU
-			opt := &DynamicBitOptimizer{config: cfg}
-			opt.stepParamCPU(0, pCPU, gCPU, vCPU)
+			opt := NewDynamicBitOptimizerWithVelocities(cfg, nil)
+			opt.StepParamCPU(0, pCPU, gCPU, vCPU)
 
 			// Single param step on 32-bit GPU
 			_, err := gpu.OptimizerStep(pGPU, gGPU, vGPU, cfg)

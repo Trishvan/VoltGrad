@@ -1,4 +1,4 @@
-package voltgrad
+package test
 
 import (
 	"math"
@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 	"unsafe"
+
+	. "github.com/Trishvan/VoltGrad/voltgrad/core"
 )
 
 // TestShaderInt64Validation verifies that shaderInt64 is supported and enabled on the hardware device.
@@ -236,10 +238,7 @@ func TestGPUCPUOptimizerDiscrepancies(t *testing.T) {
 		velocityCPU := velocityGPU.Clone()
 
 		// Run CPU
-		cpuOpt := &DynamicBitOptimizer{
-			config:     cfg,
-			velocities: [][]*DynamicBitTensor{{velocityCPU}},
-		}
+		cpuOpt := NewDynamicBitOptimizerWithVelocities(cfg, [][]*DynamicBitTensor{{velocityCPU}})
 		mockModel := &singleTensorModel{param: paramCPU, grad: grad}
 		_, err := cpuOpt.Step(mockModel)
 		if err != nil {
@@ -320,10 +319,7 @@ func TestFull64BitGPUDBWOptimizer(t *testing.T) {
 	velCPU := velGPU.Clone()
 
 	// CPU step
-	cpuOpt := &DynamicBitOptimizer{
-		config:     cfg,
-		velocities: [][]*DynamicBitTensor{{velCPU}},
-	}
+	cpuOpt := NewDynamicBitOptimizerWithVelocities(cfg, [][]*DynamicBitTensor{{velCPU}})
 	mockModel := &singleTensorModel{param: paramCPU, grad: gradCPU}
 	_, err = cpuOpt.Step(mockModel)
 	if err != nil {
@@ -409,10 +405,7 @@ func TestRandomizedGPUCPUParity(t *testing.T) {
 		}
 
 		// CPU step
-		cpuOpt := &DynamicBitOptimizer{
-			config:     cfg,
-			velocities: [][]*DynamicBitTensor{{velCPU}},
-		}
+		cpuOpt := NewDynamicBitOptimizerWithVelocities(cfg, [][]*DynamicBitTensor{{velCPU}})
 		mockModel := &singleTensorModel{param: paramCPU, grad: gradCPU}
 		_, err = cpuOpt.Step(mockModel)
 		if err != nil {
@@ -691,7 +684,7 @@ func TestRandomizedDBWRepackParity(t *testing.T) {
 
 		pushRepack := [2]uint32{uint32(count), uint32(w)}
 		wg := uint32((count + 63) / 64)
-		if err := gpu.kernelRepack.Dispatch([]*GpuBuffer{bufWeights, bufPacked}, unsafe.Pointer(&pushRepack[0]), 8, wg); err != nil {
+		if err := gpu.KernelRepack().Dispatch([]*GpuBuffer{bufWeights, bufPacked}, unsafe.Pointer(&pushRepack[0]), 8, wg); err != nil {
 			bufWeights.Free()
 			bufPacked.Free()
 			t.Fatalf("Width %d repack dispatch failed: %v", w, err)

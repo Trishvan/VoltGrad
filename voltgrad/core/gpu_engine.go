@@ -1,4 +1,4 @@
-package voltgrad
+package core
 
 import (
 	"fmt"
@@ -128,6 +128,16 @@ func NewGpuEngine(hw *HardwareContext) (*GpuEngine, error) {
 // HardwareContext returns the underlying Vulkan hardware context.
 func (e *GpuEngine) HardwareContext() *HardwareContext {
 	return e.hw
+}
+
+// KernelRepack returns the compute kernel used for DBW bitstream repacking.
+func (e *GpuEngine) KernelRepack() *ComputeKernel {
+	return e.kernelRepack
+}
+
+// KernelReLUForward returns the compute kernel used for ReLU forward activation.
+func (e *GpuEngine) KernelReLUForward() *ComputeKernel {
+	return e.kernelReLUFwd
 }
 
 // MatMulForward executes Y = (W * x) >> shift + bias on the GPU with DBW dequantization in registers.

@@ -66,7 +66,7 @@ Keep magnitudes in a sane Q16 range for your use case. The parameter tensors the
 | `LossCrossEntropy` | Integer softmax cross-entropy approximation: `-log(p_target)` for each positive target, with `p` clamped at the smallest representable Q16 quantum. | `pred - target` |
 | `LossBrierScore` | Sum of `(pred - target)^2` over all elements (not normalized). | `pred - target` |
 
-Implementations live in `ComputeLoss` (`voltgrad/model.go`). On the GPU path for `LossMSE`, the loss and gradient are computed by the `loss_mse` kernel directly in device memory.
+Implementations live in `ComputeLoss` (`voltgrad/core/model.go`). On the GPU path for `LossMSE`, the loss and gradient are computed by the `loss_mse` kernel directly in device memory.
 
 Classification workflows typically pair `LossCrossEntropy` with an `IntegerSoftmax` in the model's forward pass; `LossMSE` covers regression and general fixed-point function approximation.
 

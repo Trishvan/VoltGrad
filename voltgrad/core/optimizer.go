@@ -1,4 +1,4 @@
-package voltgrad
+package core
 
 import (
 	"fmt"
@@ -66,6 +66,15 @@ func NewDynamicBitOptimizer(config OptimizerConfig, model ModelArchitecture) *Dy
 	}
 }
 
+// NewDynamicBitOptimizerWithVelocities constructs an optimizer with explicit velocity tensors.
+func NewDynamicBitOptimizerWithVelocities(config OptimizerConfig, velocities [][]*DynamicBitTensor) *DynamicBitOptimizer {
+	return &DynamicBitOptimizer{
+		config:     config,
+		velocities: velocities,
+		steps:      0,
+	}
+}
+
 // Step performs one optimization step over all model parameters and gradients.
 // Returns a summary of any DBW bit widening that occurred during the update.
 func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) {
@@ -88,7 +97,7 @@ func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) 
 			return nil, fmt.Errorf("param tensor %d len %d != grad len %d", pIdx, p.Len(), g.Len())
 		}
 
-		if notice := opt.stepParamCPU(pIdx, p, g, v); notice != "" {
+		if notice := opt.StepParamCPU(pIdx, p, g, v); notice != "" {
 			wideningNotices = append(wideningNotices, notice)
 		}
 	}
@@ -96,7 +105,8 @@ func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) 
 	return wideningNotices, nil
 }
 
-func (opt *DynamicBitOptimizer) stepParamCPU(pIdx int, p, g, v *DynamicBitTensor) string {
+// StepParamCPU executes a single parameter tensor update on the CPU reference engine.
+func (opt *DynamicBitOptimizer) StepParamCPU(pIdx int, p, g, v *DynamicBitTensor) string {
 	lr := int64(opt.config.LearningRateQ16)
 	beta := int64(opt.config.MomentumBeta)
 	one := int64(1 << opt.config.FractionalBits)
@@ -179,7 +189,7 @@ func (opt *DynamicBitOptimizer) StepGPU(gpu *GpuEngine, model ModelArchitecture)
 			if pt := p.PersistentGPU(); pt != nil && pt.IsAllocated() {
 				_ = pt.SyncToHost()
 			}
-			if notice := opt.stepParamCPU(pIdx, p, g, v); notice != "" {
+			if notice := opt.StepParamCPU(pIdx, p, g, v); notice != "" {
 				wideningNotices = append(wideningNotices, notice)
 			}
 			continue

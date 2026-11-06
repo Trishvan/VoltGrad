@@ -1,8 +1,9 @@
-package voltgrad
+package core
 
 import (
 	"fmt"
 	"sync"
+	"unsafe"
 )
 
 // BufferPool manages reusable host-coherent GPU memory buffers to eliminate repeated Vulkan allocations.
@@ -173,4 +174,30 @@ func (b *GpuBuffer) Capacity() uint64 {
 // Size returns the currently active size of the buffer.
 func (b *GpuBuffer) Size() uint64 {
 	return b.size
+}
+
+// MappedAddress returns the raw unsafe pointer to the host-mapped memory.
+func (b *GpuBuffer) MappedAddress() unsafe.Pointer {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.mapped
+}
+
+// BucketLen returns the number of idle buffers available in the bucket for capacity.
+func (p *BufferPool) BucketLen(capacity uint64) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.pools[capacity])
+}
+
+// ContainsBuffer checks whether a specific buffer instance resides in the bucket for capacity.
+func (p *BufferPool) ContainsBuffer(capacity uint64, target *GpuBuffer) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, b := range p.pools[capacity] {
+		if b == target {
+			return true
+		}
+	}
+	return false
 }

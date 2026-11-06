@@ -56,13 +56,13 @@ glslc --version
 
 ### 1. Compiling Shaders
 
-VoltGrad includes a pure Go shader compilation CLI that compiles GLSL compute shaders (`voltgrad/shaders/*.comp`) into SPIR-V bytecode (`*.spv`):
+VoltGrad includes a pure Go shader compilation CLI that compiles GLSL compute shaders (`voltgrad/core/shaders/*.comp`) into SPIR-V bytecode (`*.spv`):
 
 ```bash
-go run ./voltgrad/cmd/compile-shaders
+go run ./cmd/compileshaders
 ```
 
-If you modify any shader in `voltgrad/shaders/`, you **must** run this tool and commit both the `.comp` and updated `.spv` binaries.
+If you modify any shader in `voltgrad/core/shaders/`, you **must** run this tool and commit both the `.comp` and updated `.spv` binaries.
 
 ### 2. Running Tests
 
@@ -75,7 +75,7 @@ go test -v ./...
 To test with the Go race detector (on supported platforms):
 
 ```bash
-go test -race ./voltgrad
+go test -race ./voltgrad/test
 ```
 
 *Note: On systems without a Vulkan driver, hardware tests will automatically skip cleanly (`Vulkan not available, skipping`).*
@@ -85,7 +85,7 @@ go test -race ./voltgrad
 Verify performance and memory allocations across CPU and persistent GPU paths:
 
 ```bash
-go test -bench="Benchmark" -run="TestNone" github.com/Trishvan/VoltGrad/voltgrad -benchmem
+go test -bench="Benchmark" -run="TestNone" ./voltgrad/test -benchmem
 ```
 
 Ensure all benchmarks complete with `PASS` and zero runtime panics.

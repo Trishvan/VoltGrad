@@ -1,4 +1,4 @@
-package voltgrad
+package test
 
 import (
 	"fmt"
@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"unsafe"
+
+	. "github.com/Trishvan/VoltGrad/voltgrad/core"
 )
 
 func randInt64ForBits(r *rand.Rand, bitWidth int) int64 {
@@ -348,7 +350,7 @@ func TestAsyncDispatchAndProfiling(t *testing.T) {
 	buffers := []*GpuBuffer{bufX, bufY}
 
 	// 1. Asynchronous Dispatch
-	token, err := gpu.kernelReLUFwd.DispatchAsync(buffers, unsafe.Pointer(&push[0]), 4, wg)
+	token, err := gpu.KernelReLUForward().DispatchAsync(buffers, unsafe.Pointer(&push[0]), 4, wg)
 	if err != nil {
 		t.Fatalf("DispatchAsync failed: %v", err)
 	}
@@ -376,7 +378,7 @@ func TestAsyncDispatchAndProfiling(t *testing.T) {
 	}
 
 	// 2. Profiled Execution
-	dur, err := gpu.kernelReLUFwd.DispatchProfiled(buffers, unsafe.Pointer(&push[0]), 4, wg)
+	dur, err := gpu.KernelReLUForward().DispatchProfiled(buffers, unsafe.Pointer(&push[0]), 4, wg)
 	if err != nil {
 		t.Fatalf("DispatchProfiled failed: %v", err)
 	}
@@ -509,7 +511,7 @@ func TestConcurrentAsyncAndProfiledDispatchSafety(t *testing.T) {
 
 			for it := 0; it < iterations; it++ {
 				if (workerID+it)%2 == 0 {
-					token, err := gpu.kernelReLUFwd.DispatchAsync(buffers, unsafe.Pointer(&push[0]), 4, wg)
+					token, err := gpu.KernelReLUForward().DispatchAsync(buffers, unsafe.Pointer(&push[0]), 4, wg)
 					if err != nil {
 						errCh <- fmt.Errorf("worker %d async dispatch failed: %w", workerID, err)
 						return
@@ -519,7 +521,7 @@ func TestConcurrentAsyncAndProfiledDispatchSafety(t *testing.T) {
 						return
 					}
 				} else {
-					dur, err := gpu.kernelReLUFwd.DispatchProfiled(buffers, unsafe.Pointer(&push[0]), 4, wg)
+					dur, err := gpu.KernelReLUForward().DispatchProfiled(buffers, unsafe.Pointer(&push[0]), 4, wg)
 					if err != nil {
 						errCh <- fmt.Errorf("worker %d profiled dispatch failed: %w", workerID, err)
 						return
@@ -568,7 +570,7 @@ func TestComputeKernelCloseUnderInFlightCompletion(t *testing.T) {
 	}
 	defer hw.Close()
 
-	kernel, err := NewComputeKernel(hw, reluForwardSPV, 2, 4)
+	kernel, err := NewComputeKernel(hw, ReluForwardSPV(), 2, 4)
 	if err != nil {
 		t.Fatalf("Failed to create compute kernel: %v", err)
 	}

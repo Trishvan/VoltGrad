@@ -1,4 +1,4 @@
-package voltgrad
+package core
 
 // LinearLayer provides a standard parameterized fully-connected layer with weights and optional bias.
 type LinearLayer struct {

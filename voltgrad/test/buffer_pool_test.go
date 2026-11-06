@@ -1,8 +1,10 @@
-package voltgrad
+package test
 
 import (
 	"sync"
 	"testing"
+
+	. "github.com/Trishvan/VoltGrad/voltgrad/core"
 )
 
 func TestBufferPoolReuseAndClear(t *testing.T) {
@@ -28,7 +30,7 @@ func TestBufferPoolReuseAndClear(t *testing.T) {
 	if buf1.Size() != 100 {
 		t.Fatalf("Expected size 100, got %d", buf1.Size())
 	}
-	addr1 := buf1.mapped
+	addr1 := buf1.MappedAddress()
 
 	// Write data to verify valid mapping
 	testData := []int32{1, 2, 3, 4}
@@ -59,8 +61,8 @@ func TestBufferPoolReuseAndClear(t *testing.T) {
 	if buf2.Size() != 150 {
 		t.Fatalf("Expected size 150, got %d", buf2.Size())
 	}
-	if buf2.mapped != addr1 {
-		t.Fatalf("Expected buffer memory address to be reused from pool (%p vs %p)", buf2.mapped, addr1)
+	if buf2.MappedAddress() != addr1 {
+		t.Fatalf("Expected buffer memory address to be reused from pool (%p vs %p)", buf2.MappedAddress(), addr1)
 	}
 
 	// 4. Request larger buffer (e.g. 500 -> capacity 512)
@@ -75,7 +77,7 @@ func TestBufferPoolReuseAndClear(t *testing.T) {
 
 	// 5. Clear pool
 	pool.Clear()
-	if len(pool.pools[256]) != 0 || len(pool.pools[512]) != 0 {
+	if pool.BucketLen(256) != 0 || pool.BucketLen(512) != 0 {
 		t.Fatalf("Expected empty pool buckets after Clear()")
 	}
 
@@ -106,14 +108,14 @@ func TestBufferDoubleReleaseAndLifecycleSafety(t *testing.T) {
 		t.Fatalf("Expected buffer to not be in-use after Release")
 	}
 
-	bucketLen := len(pool.pools[buf.Capacity()])
+	bucketLen := pool.BucketLen(buf.Capacity())
 	if bucketLen != 1 {
 		t.Fatalf("Expected bucket length 1, got %d", bucketLen)
 	}
 
 	// Second release (must be safe no-op and NOT duplicate buffer in pool)
 	buf.Release()
-	if len(pool.pools[buf.Capacity()]) != 1 {
+	if pool.BucketLen(buf.Capacity()) != 1 {
 		t.Fatalf("Double release duplicated buffer in pool bucket!")
 	}
 
@@ -240,16 +242,7 @@ func TestBufferPoolFreeAfterReleaseSafety(t *testing.T) {
 	buf1.Release()
 
 	// Verify buffer is back in pool
-	pool.mu.Lock()
-	foundInPool := false
-	for _, b := range pool.pools[capSize] {
-		if b == buf1 {
-			foundInPool = true
-			break
-		}
-	}
-	pool.mu.Unlock()
-	if !foundInPool {
+	if !pool.ContainsBuffer(capSize, buf1) {
 		t.Fatalf("Expected buffer to be in pool after Release()")
 	}
 
@@ -260,16 +253,7 @@ func TestBufferPoolFreeAfterReleaseSafety(t *testing.T) {
 	}
 
 	// Verify buf1 was evicted from the pool bucket
-	pool.mu.Lock()
-	stillInPool := false
-	for _, b := range pool.pools[capSize] {
-		if b == buf1 {
-			stillInPool = true
-			break
-		}
-	}
-	pool.mu.Unlock()
-	if stillInPool {
+	if pool.ContainsBuffer(capSize, buf1) {
 		t.Fatalf("Free() failed to atomically evict buffer from pool bucket!")
 	}
 
@@ -286,7 +270,7 @@ func TestBufferPoolFreeAfterReleaseSafety(t *testing.T) {
 	if buf2.IsFreed() {
 		t.Fatalf("BufferPool handed out a buffer marked as freed!")
 	}
-	if buf2.mapped == nil {
+	if buf2.MappedAddress() == nil {
 		t.Fatalf("BufferPool handed out a buffer with nil memory mapping!")
 	}
 
@@ -301,14 +285,9 @@ func TestBufferPoolFreeAfterReleaseSafety(t *testing.T) {
 
 	// 4. Test Put on freed buffer is safely ignored
 	pool.Put(buf1)
-	pool.mu.Lock()
-	for _, b := range pool.pools[capSize] {
-		if b == buf1 {
-			pool.mu.Unlock()
-			t.Fatalf("Put() allowed inserting a freed buffer into the pool!")
-		}
+	if pool.ContainsBuffer(capSize, buf1) {
+		t.Fatalf("Put() allowed inserting a freed buffer into the pool!")
 	}
-	pool.mu.Unlock()
 
 	t.Log(">>> BufferPool Free-After-Release Safety VERIFIED! <<<")
 }

@@ -1,7 +1,9 @@
-package voltgrad
+package test
 
 import (
 	"testing"
+
+	. "github.com/Trishvan/VoltGrad/voltgrad/core"
 )
 
 func BenchmarkCPUMatMul(b *testing.B) {

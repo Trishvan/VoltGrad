@@ -12,33 +12,40 @@ VoltGrad brings **adaptive, vendor-neutral GPU computing** to Go without proprie
 
 ## 📁 Architecture Overview
 
-All code lives in this standalone folder `voltgrad/` with **zero CGO, no heavyweight native ML dependencies** (pure Go standard library + Vulkan C-ABI dynamic loading via `syscall` on Windows and `purego` on Unix/macOS):
+All code lives in the standalone `voltgrad/` package with **zero CGO, no heavyweight native ML dependencies** (pure Go standard library + Vulkan C-ABI dynamic loading via `syscall` on Windows and `purego` on Unix/macOS), organized into clean `core/` and `test/` subpackages:
 
-| File | Purpose |
+| Subsystem / File | Purpose |
 | :--- | :--- |
-| [`tensor.go`](voltgrad/tensor.go) | `DynamicBitTensor` with mandatory Dynamic Bit Widening ($W \in [2, 64]$ bits), bit-packing, zero quantization clipping. |
-| [`persistent_tensor.go`](voltgrad/persistent_tensor.go) | `PersistentGpuTensor` maintaining resident weights, bias, and velocity states in GPU-accessible host-coherent memory across iterations. |
-| [`model.go`](voltgrad/model.go) | `ModelArchitecture` & `BatchedModelArchitecture` interfaces, `ComputeLoss` (MSE, Cross-Entropy, Brier). |
-| [`hardware.go`](voltgrad/hardware.go) | Direct Vulkan GPU discovery, logical device initialization, host-coherent memory mapping, bounds-checked `GpuBuffer`, and `DeviceReport`. |
-| [`buffer_pool.go`](voltgrad/buffer_pool.go) | Zero-allocation power-of-two capacity bucketing for Vulkan host-coherent storage buffers. |
-| [`kernel.go`](voltgrad/kernel.go) | Generic SPIR-V compute kernel manager with asynchronous dispatch (`DispatchAsync`), `ExecutionToken`, and GPU timestamp profiling (`DispatchProfiled`). |
-| [`gpu_engine.go`](voltgrad/gpu_engine.go) | Coordinates GPU Batched MatMul, Backpropagation, GPU Activations (ReLU), GPU Loss (MSE), and DBW Optimizer. |
-| [`pipeline.go`](voltgrad/pipeline.go) | Vulkan compute shader compilation, pipeline layouts, push constants, and dispatch execution. |
-| [`optimizer.go`](voltgrad/optimizer.go) | `DynamicBitOptimizer` implementing $w(t+1) = w(t) - \lfloor \eta \cdot g / 2^{Q_f} \rfloor$ on GPU/CPU with DBW auto-widening. |
-| [`layers.go`](voltgrad/layers.go) | Reusable building blocks (`LinearLayer`, MatMul, Batched GEMM) with persistent GPU binding (`BindGPU`, `SyncToHost`). |
-| [`ops.go`](voltgrad/ops.go) | Fixed-point integer operations (MatMulVec64, Softmax, ReLU, activation backward passes). |
-| [`trainer.go`](voltgrad/trainer.go) | `VulkanTrainingPipeline` coordinating training epochs, batched GEMM dispatch, and DBW logging. |
-| [`vulkan_loader_windows.go`](voltgrad/vulkan_loader_windows.go) / [`_unix.go`](voltgrad/vulkan_loader_unix.go) | Zero-CGO cross-platform dynamic Vulkan loader for Windows (`vulkan-1.dll`), Linux (`libvulkan.so`), and macOS (`libvulkan.dylib`). |
-| [`benchmark_test.go`](voltgrad/benchmark_test.go) | Standard Go benchmarks measuring CPU MatMul, GPU MatMul, Batched GEMM, and Persistent Tensor synchronization. |
-| [`gpu_performance_test.go`](voltgrad/gpu_performance_test.go) | Performance and parity suite for Batched GEMM, GPU Activations, MSE Loss, Asynchronous Dispatch, and Profiling. |
-| [`shaders/`](voltgrad/shaders/) | GLSL compute shader sources (GEMM forward/backward, batched GEMM, ReLU, Loss, DBW repack, Optimizer), compiled SPIR-V bytecode, and build scripts. |
+| [`voltgrad.go`](voltgrad/voltgrad.go) | Public top-level facade re-exporting core types, constructors, and operators for seamless caller ergonomics. |
+| **`voltgrad/core/`** | **Core Execution Engine & Runtime** |
+| [`core/tensor.go`](voltgrad/core/tensor.go) | `DynamicBitTensor` with mandatory Dynamic Bit Widening ($W \in [2, 64]$ bits), bit-packing, zero quantization clipping. |
+| [`core/persistent_tensor.go`](voltgrad/core/persistent_tensor.go) | `PersistentGpuTensor` maintaining resident weights, bias, and velocity states in GPU-accessible host-coherent memory across iterations. |
+| [`core/model.go`](voltgrad/core/model.go) | `ModelArchitecture` & `BatchedModelArchitecture` interfaces, `ComputeLoss` (MSE, Cross-Entropy, Brier). |
+| [`core/hardware.go`](voltgrad/core/hardware.go) | Direct Vulkan GPU discovery, logical device initialization, host-coherent memory mapping, bounds-checked `GpuBuffer`, and `DeviceReport`. |
+| [`core/buffer_pool.go`](voltgrad/core/buffer_pool.go) | Zero-allocation power-of-two capacity bucketing for Vulkan host-coherent storage buffers. |
+| [`core/kernel.go`](voltgrad/core/kernel.go) | Generic SPIR-V compute kernel manager with asynchronous dispatch (`DispatchAsync`), `ExecutionToken`, and GPU timestamp profiling (`DispatchProfiled`). |
+| [`core/gpu_engine.go`](voltgrad/core/gpu_engine.go) | Coordinates GPU Batched MatMul, Backpropagation, GPU Activations (ReLU), GPU Loss (MSE), and DBW Optimizer. |
+| [`core/pipeline.go`](voltgrad/core/pipeline.go) | Vulkan compute shader compilation, pipeline layouts, push constants, and dispatch execution. |
+| [`core/optimizer.go`](voltgrad/core/optimizer.go) | `DynamicBitOptimizer` implementing $w(t+1) = w(t) - \lfloor \eta \cdot g / 2^{Q_f} \rfloor$ on GPU/CPU with DBW auto-widening. |
+| [`core/layers.go`](voltgrad/core/layers.go) | Reusable building blocks (`LinearLayer`, MatMul, Batched GEMM) with persistent GPU binding (`BindGPU`, `SyncToHost`). |
+| [`core/ops.go`](voltgrad/core/ops.go) | Fixed-point integer operations (MatMulVec64, Softmax, ReLU, activation backward passes). |
+| [`core/trainer.go`](voltgrad/core/trainer.go) | `VulkanTrainingPipeline` coordinating training epochs, batched GEMM dispatch, and DBW logging. |
+| [`core/vulkan_loader_windows.go`](voltgrad/core/vulkan_loader_windows.go) / [`_unix.go`](voltgrad/core/vulkan_loader_unix.go) | Zero-CGO cross-platform dynamic Vulkan loader for Windows (`vulkan-1.dll`), Linux (`libvulkan.so`), and macOS (`libvulkan.dylib`). |
+| [`core/shaders/`](voltgrad/core/shaders/) | GLSL compute shader sources (64-bit and 32-bit dual-path pipelines), compiled SPIR-V bytecode, and build scripts. |
+| **`voltgrad/test/`** | **Verification Suite & Benchmarks** |
+| [`test/correctness_test.go`](voltgrad/test/correctness_test.go) | 64-bit DBW correctness, CPU/GPU parity, and boundary condition validation. |
+| [`test/dual_path_test.go`](voltgrad/test/dual_path_test.go) | 32-bit core path, optional `shaderInt64`, memory footprint, and precision fallback suite. |
+| [`test/gpu_performance_test.go`](voltgrad/test/gpu_performance_test.go) | Batched GEMM, GPU Activations, MSE Loss, Asynchronous Dispatch, and Profiling parity. |
+| [`test/buffer_pool_test.go`](voltgrad/test/buffer_pool_test.go) | Buffer pool reuse, lifecycle safety, and double-release protection tests. |
+| [`test/pipeline_test.go`](voltgrad/test/pipeline_test.go) | End-to-end multi-epoch persistent training pipeline with Dynamic Bit Widening. |
+| [`test/benchmark_test.go`](voltgrad/test/benchmark_test.go) | Standard Go benchmarks measuring CPU MatMul, GPU MatMul, Batched GEMM, and Persistent Tensor synchronization. |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records: [ADR-0001 (Tensor-Wise DBW)](docs/adr/0001-tensor-wise-dynamic-bit-widening.md), [ADR-0002 (Dual-Path Execution)](docs/adr/0002-dual-path-execution-and-optional-shaderint64.md), [ADR-0003 (Polyglot Runtime)](docs/adr/0003-polyglot-go-rust-execution-runtime.md), and [ADR-0004 (Language-Independent Engine)](docs/adr/0004-language-independent-engine-and-stable-c-abi.md). |
 
 ---
 
 ## 🚀 Quickstart: Developer Writing a Custom Model
 
-Developers only define their struct implementing [`ModelArchitecture`](voltgrad/model.go):
+Developers only define their struct implementing [`ModelArchitecture`](voltgrad/core/model.go):
 
 ```go
 package main

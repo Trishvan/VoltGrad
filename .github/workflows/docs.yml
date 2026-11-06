@@ -18,8 +18,8 @@ on:
       - 'CONTRIBUTING.md'
       - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
-      - 'voltgrad/shaders/README.md'
-      - 'voltgrad/shaders/*.comp'
+      - 'voltgrad/core/shaders/README.md'
+      - 'voltgrad/core/shaders/*.comp'
   workflow_dispatch:
 
 permissions:
@@ -51,7 +51,7 @@ jobs:
         run: |
           cp README.md docs/project-readme.md
           cp CONTRIBUTING.md docs/contributing.md
-          cp voltgrad/shaders/README.md docs/shaders-reference.md
+          cp voltgrad/core/shaders/README.md docs/shaders-reference.md
           cp docs/README.md docs/index.md
           rm docs/README.md
 
@@ -60,12 +60,12 @@ jobs:
           sed -i \
             -e 's#](../README.md)#](project-readme.md)#g' \
             -e 's#](../CONTRIBUTING.md)#](contributing.md)#g' \
-            -e 's#](../voltgrad/shaders/README.md)#](shaders-reference.md)#g' \
+            -e 's#](../voltgrad/core/shaders/README.md)#](shaders-reference.md)#g' \
             -e 's#](../docs/adr/#](adr/#g' \
             docs/*.md
           sed -i \
             -e 's#](CONTRIBUTING.md)#](contributing.md)#g' \
-            -e 's#](voltgrad/shaders/README.md)#](shaders-reference.md)#g' \
+            -e 's#](voltgrad/core/shaders/README.md)#](shaders-reference.md)#g' \
             -e 's#](docs/README.md)#](index.md)#g' \
             -e 's#](docs/adr/)#](https://github.com/Trishvan/VoltGrad/tree/main/docs/adr)#g' \
             -e 's#](docs/#](#g' \

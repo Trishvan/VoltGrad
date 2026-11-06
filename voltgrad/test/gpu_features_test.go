@@ -1,8 +1,10 @@
-package voltgrad
+package test
 
 import (
 	"reflect"
 	"testing"
+
+	. "github.com/Trishvan/VoltGrad/voltgrad/core"
 )
 
 // TestGPUMatMulLinearLayer explicitly tests GPU-backed matrix multiplication against CPU reference.
@@ -139,10 +141,7 @@ func TestGPUOptimizerWithDBW(t *testing.T) {
 	initialBits := paramGPU.BitWidth()
 
 	// 1. Run CPU reference step
-	cpuOpt := &DynamicBitOptimizer{
-		config:     cfg,
-		velocities: [][]*DynamicBitTensor{{velocityCPU}},
-	}
+	cpuOpt := NewDynamicBitOptimizerWithVelocities(cfg, [][]*DynamicBitTensor{{velocityCPU}})
 	mockModelCPU := &singleTensorModel{param: paramCPU, grad: grad}
 	_, err = cpuOpt.Step(mockModelCPU)
 	if err != nil {

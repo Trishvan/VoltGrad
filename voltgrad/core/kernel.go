@@ -1,4 +1,4 @@
-package voltgrad
+package core
 
 import (
 	_ "embed"
@@ -69,6 +69,11 @@ var optimizerStepI32SPV []byte
 
 //go:embed shaders/repack_dbw_i32.spv
 var repackDbwI32SPV []byte
+
+// ReluForwardSPV returns the embedded SPIR-V bytecode for the ReLU forward kernel.
+func ReluForwardSPV() []byte {
+	return reluForwardSPV
+}
 
 // ComputeKernel manages a Vulkan compute pipeline for a specific SPIR-V shader.
 type ComputeKernel struct {

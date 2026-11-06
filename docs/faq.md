@@ -17,7 +17,7 @@ Intel, AMD, NVIDIA discrete and integrated GPUs, as well as Apple Silicon throug
 The best-scoring device: discrete GPUs rank highest (+1000), integrated (+500), virtual GPUs (+200), CPU rasterizers (+100), with a +500 preference bonus for hardware `shaderInt64` support. Multi-device training is not supported yet; exactly one device is opened per pipeline.
 
 **Do I need the Vulkan SDK installed to use VoltGrad?**
-No. The library loads the Vulkan runtime that ships with your GPU drivers (or MoltenVK), and all compute kernels ship precompiled inside the package. The SDK (or `glslc`/`glslangValidator`) is only needed to recompile shaders when you modify the GLSL sources — see [Shader Reference](../voltgrad/shaders/README.md).
+No. The library loads the Vulkan runtime that ships with your GPU drivers (or MoltenVK), and all compute kernels ship precompiled inside the package. The SDK (or `glslc`/`glslangValidator`) is only needed to recompile shaders when you modify the GLSL sources — see [Shader Reference](../voltgrad/core/shaders/README.md).
 
 **Does it work without cgo?**
 Yes. Windows uses the Go standard library's syscall loader; Linux and macOS use `github.com/ebitengine/purego` for dynamic loading. No C compiler or CGO is required on any platform.
@@ -57,7 +57,7 @@ Bind layer parameters once with `LinearLayer.BindGPU` (or manage `NewPersistentG
 `Dispatch` blocks the CPU thread until the GPU finishes. `DispatchAsync` instead returns an `ExecutionToken` whose `Wait(timeoutNs)` you call when ready, so host-side work can overlap GPU execution. `DispatchProfiled` returns the measured execution duration, from GPU timestamp queries when the device exposes them and from wall-clock timing otherwise.
 
 **How can I measure and compare CPU versus GPU performance?**
-Run the bundled benchmark suite: `go test -bench=. -run '^$' ./voltgrad/`. It includes `BenchmarkCPUMatMul`, `BenchmarkGPUMatMul`, `BenchmarkBatchedGEMM`, `BenchmarkDBWOptimizerStep`, and `BenchmarkPersistentGpuTensorSync`. The GPU benchmarks skip automatically when no `shaderInt64` device is available, so the same command runs on any machine.
+Run the bundled benchmark suite: `go test -bench=. -run '^$' ./voltgrad/test/`. It includes `BenchmarkCPUMatMul`, `BenchmarkGPUMatMul`, `BenchmarkBatchedGEMM`, `BenchmarkDBWOptimizerStep`, and `BenchmarkPersistentGpuTensorSync`. The GPU benchmarks skip automatically when no `shaderInt64` device is available, so the same command runs on any machine.
 
 **Where is checkpointing / model serialization?**
 Not yet — it is on the 1.0 roadmap. State is accessible for manual serialization today: parameters are `*DynamicBitTensor` objects whose contents are readable through `ToInt64Slice()`, and reconstructing a fresh model via `FromInt64Slice` restores weights (bit-widths are re-derived as the minimal fit).
@@ -88,7 +88,7 @@ Hardware-dependent tests detect whether a usable Vulkan compute device is presen
 ## Project
 
 **How are the bundled shaders maintained?**
-GLSL sources live in `voltgrad/shaders/*.comp` with their SPIR-V binaries committed alongside. Recompile with `go run ./cmd/compileshaders` after editing sources, and commit both together — the CI verifies the `.comp` files keep compiling.
+GLSL sources live in `voltgrad/core/shaders/*.comp` with their SPIR-V binaries committed alongside. Recompile with `go run ./cmd/compileshaders` after editing sources, and commit both together — the CI verifies the `.comp` files keep compiling.
 
 **Where do design decisions get recorded?**
 Architecture Decision Records live in `docs/adr/`:
