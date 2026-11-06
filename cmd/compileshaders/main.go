@@ -9,6 +9,7 @@ import (
 )
 
 var shaderFiles = []string{
+	// 64-bit native compute kernels (require shaderInt64)
 	"matmul_forward",
 	"matmul_backward_dx",
 	"matmul_backward_dw",
@@ -20,6 +21,17 @@ var shaderFiles = []string{
 	"loss_mse",
 	"optimizer_step",
 	"repack_dbw",
+
+	// 32-bit compute kernels (standard Vulkan 1.0 without shaderInt64)
+	"matmul_forward_i32",
+	"matmul_backward_dx_i32",
+	"matmul_backward_dw_i32",
+	"matmul_batched_forward_i32",
+	"matmul_batched_backward_dx_i32",
+	"matmul_batched_backward_dw_i32",
+	"loss_mse_i32",
+	"optimizer_step_i32",
+	"repack_dbw_i32",
 }
 
 func findCompiler() (string, string) {
@@ -31,13 +43,32 @@ func findCompiler() (string, string) {
 	if p, err := exec.LookPath("glslangValidator"); err == nil {
 		return "glslangValidator", p
 	}
+	// Look for glslang in PATH
+	if p, err := exec.LookPath("glslang"); err == nil {
+		return "glslangValidator", p
+	}
+
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+
+	// Check local tools directory
+	localCandidates := []struct {
+		cType string
+		path  string
+	}{
+		{"glslangValidator", filepath.Join("C:\\tools", "glslang", "bin", "glslang"+ext)},
+		{"glslangValidator", filepath.Join("C:\\tools", "glslang", "bin", "glslangValidator"+ext)},
+	}
+	for _, c := range localCandidates {
+		if _, err := os.Stat(c.path); err == nil {
+			return c.cType, c.path
+		}
+	}
 
 	// Check VULKAN_SDK environment variable
 	if sdk := os.Getenv("VULKAN_SDK"); sdk != "" {
-		ext := ""
-		if runtime.GOOS == "windows" {
-			ext = ".exe"
-		}
 		candidates := []struct {
 			cType string
 			path  string
@@ -46,6 +77,7 @@ func findCompiler() (string, string) {
 			{"glslc", filepath.Join(sdk, "Bin", "glslc"+ext)},
 			{"glslangValidator", filepath.Join(sdk, "bin", "glslangValidator"+ext)},
 			{"glslangValidator", filepath.Join(sdk, "Bin", "glslangValidator"+ext)},
+			{"glslangValidator", filepath.Join(sdk, "bin", "glslang"+ext)},
 		}
 		for _, c := range candidates {
 			if _, err := os.Stat(c.path); err == nil {

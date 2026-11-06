@@ -67,8 +67,13 @@ func (pt *PersistentGpuTensor) Allocate() error {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 
-	// Ensure capacity to hold up to 64-bit packed words or 64-bit uncompressed elements
-	neededBytes := uint64(pt.tensor.Len() * 8)
+	// In 64-bit mode (shaderInt64), preallocates capacity = len * 8 bytes (approx 32 bytes/elem across 4 buffers).
+	// In 32-bit mode (pure GLSL 4.50), preallocates capacity = len * 4 bytes (approx 16 bytes/elem across 4 buffers, saving 50% VRAM).
+	elemBytes := uint64(8)
+	if !pt.hw.Is64Bit() {
+		elemBytes = 4
+	}
+	neededBytes := uint64(pt.tensor.Len()) * elemBytes
 	if neededBytes < 64 {
 		neededBytes = 64
 	}
@@ -132,12 +137,22 @@ func (pt *PersistentGpuTensor) SyncToGPU() error {
 		return fmt.Errorf("failed to sync packed words to GPU: %w", err)
 	}
 
-	int64s := pt.tensor.ToInt64Slice()
-	if err := pt.bufInt64.SetActiveSize(uint64(len(int64s) * 8)); err != nil {
-		return fmt.Errorf("failed to set active size on int64 buffer: %w", err)
-	}
-	if err := pt.bufInt64.WriteInt64(int64s); err != nil {
-		return fmt.Errorf("failed to sync int64 elements to GPU: %w", err)
+	if pt.hw.Is64Bit() {
+		int64s := pt.tensor.ToInt64Slice()
+		if err := pt.bufInt64.SetActiveSize(uint64(len(int64s) * 8)); err != nil {
+			return fmt.Errorf("failed to set active size on int64 buffer: %w", err)
+		}
+		if err := pt.bufInt64.WriteInt64(int64s); err != nil {
+			return fmt.Errorf("failed to sync int64 elements to GPU: %w", err)
+		}
+	} else {
+		int32s := pt.tensor.ToInt32Slice()
+		if err := pt.bufInt64.SetActiveSize(uint64(len(int32s) * 4)); err != nil {
+			return fmt.Errorf("failed to set active size on int32 buffer: %w", err)
+		}
+		if err := pt.bufInt64.WriteInt32(int32s); err != nil {
+			return fmt.Errorf("failed to sync int32 elements to GPU: %w", err)
+		}
 	}
 
 	pt.isDirty = false
@@ -154,11 +169,19 @@ func (pt *PersistentGpuTensor) SyncToHost() error {
 	}
 
 	numElements := pt.tensor.Len()
-	int64s, err := pt.bufInt64.ReadInt64(numElements)
-	if err != nil {
-		return fmt.Errorf("failed to read back persistent GPU int64 buffer: %w", err)
+	if pt.hw.Is64Bit() {
+		int64s, err := pt.bufInt64.ReadInt64(numElements)
+		if err != nil {
+			return fmt.Errorf("failed to read back persistent GPU int64 buffer: %w", err)
+		}
+		pt.tensor.FromInt64Slice(int64s)
+	} else {
+		int32s, err := pt.bufInt64.ReadInt32(numElements)
+		if err != nil {
+			return fmt.Errorf("failed to read back persistent GPU int32 buffer: %w", err)
+		}
+		pt.tensor.FromInt32Slice(int32s)
 	}
-	pt.tensor.FromInt64Slice(int64s)
 
 	if pt.bufPacked != nil {
 		numWords := len(pt.tensor.Words())
@@ -185,7 +208,19 @@ func (pt *PersistentGpuTensor) BufferPacked() *GpuBuffer {
 	return pt.bufPacked
 }
 
-// BufferInt64 returns the 64-bit element GPU buffer used by the optimizer.
+// Is64Bit reports whether this persistent tensor is provisioned for 64-bit or 32-bit execution.
+func (pt *PersistentGpuTensor) Is64Bit() bool {
+	return pt.hw.Is64Bit()
+}
+
+// BufferParam returns the uncompressed parameter GPU buffer (int64 in 64-bit mode, int32 in 32-bit mode).
+func (pt *PersistentGpuTensor) BufferParam() *GpuBuffer {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+	return pt.bufInt64
+}
+
+// BufferInt64 returns the uncompressed parameter GPU buffer used by the optimizer (BufferParam alias).
 func (pt *PersistentGpuTensor) BufferInt64() *GpuBuffer {
 	pt.mu.RLock()
 	defer pt.mu.RUnlock()

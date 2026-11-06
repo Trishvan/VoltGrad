@@ -49,6 +49,17 @@ func (l *LinearLayer) Forward(x []int32, shift uint) ([]int32, error) {
 // ForwardCtx computes output using physical GPU acceleration when available, with automatic CPU fallback.
 func (l *LinearLayer) ForwardCtx(ctx *ComputeContext, x []int32, shift uint) ([]int32, error) {
 	if ctx != nil && ctx.IsGPU() {
+		// Dynamic precision check: if weight bit-width exceeds 32 bits on a 32-bit GPU device,
+		// gracefully route through the exact 64-bit CPU reference implementation.
+		if !ctx.GpuEngine().HardwareContext().Is64Bit() && l.Weight.BitWidth() > 32 {
+			if l.GpuWeight != nil && l.GpuWeight.IsDirty() {
+				_ = l.GpuWeight.SyncToHost()
+			}
+			if l.GpuBias != nil && l.GpuBias.IsDirty() {
+				_ = l.GpuBias.SyncToHost()
+			}
+			return l.Forward(x, shift)
+		}
 		if l.GpuWeight != nil && l.GpuWeight.IsAllocated() {
 			var biasBuf *GpuBuffer
 			if l.UseBias && l.GpuBias != nil {
@@ -79,6 +90,15 @@ func (l *LinearLayer) ForwardBatched(x []int32, batchSize int, shift uint) ([]in
 // ForwardBatchedCtx computes batched output using GPU acceleration when available, with automatic CPU fallback.
 func (l *LinearLayer) ForwardBatchedCtx(ctx *ComputeContext, x []int32, batchSize int, shift uint) ([]int32, error) {
 	if ctx != nil && ctx.IsGPU() {
+		if !ctx.GpuEngine().HardwareContext().Is64Bit() && l.Weight.BitWidth() > 32 {
+			if l.GpuWeight != nil && l.GpuWeight.IsDirty() {
+				_ = l.GpuWeight.SyncToHost()
+			}
+			if l.GpuBias != nil && l.GpuBias.IsDirty() {
+				_ = l.GpuBias.SyncToHost()
+			}
+			return l.ForwardBatched(x, batchSize, shift)
+		}
 		if l.GpuWeight != nil && l.GpuWeight.IsAllocated() {
 			var biasBuf *GpuBuffer
 			if l.UseBias && l.GpuBias != nil {
@@ -109,6 +129,15 @@ func (l *LinearLayer) Backward(dOut []int32, x []int32, shift uint) ([]int32, er
 // BackwardCtx calculates gradients using physical GPU acceleration when available, with automatic CPU fallback.
 func (l *LinearLayer) BackwardCtx(ctx *ComputeContext, dOut []int32, x []int32, shift uint) ([]int32, error) {
 	if ctx != nil && ctx.IsGPU() {
+		if !ctx.GpuEngine().HardwareContext().Is64Bit() && l.Weight.BitWidth() > 32 {
+			if l.GpuWeight != nil && l.GpuWeight.IsDirty() {
+				_ = l.GpuWeight.SyncToHost()
+			}
+			if l.GpuBias != nil && l.GpuBias.IsDirty() {
+				_ = l.GpuBias.SyncToHost()
+			}
+			return l.Backward(dOut, x, shift)
+		}
 		if l.GpuWeight != nil && l.GpuWeight.IsAllocated() {
 			var gradBiasBuf *GpuBuffer
 			if l.UseBias && l.GpuBias != nil {
@@ -141,6 +170,15 @@ func (l *LinearLayer) BackwardBatched(dOut []int32, x []int32, batchSize int, sh
 // BackwardBatchedCtx calculates gradients using physical GPU batched acceleration when available.
 func (l *LinearLayer) BackwardBatchedCtx(ctx *ComputeContext, dOut []int32, x []int32, batchSize int, shift uint) ([]int32, error) {
 	if ctx != nil && ctx.IsGPU() {
+		if !ctx.GpuEngine().HardwareContext().Is64Bit() && l.Weight.BitWidth() > 32 {
+			if l.GpuWeight != nil && l.GpuWeight.IsDirty() {
+				_ = l.GpuWeight.SyncToHost()
+			}
+			if l.GpuBias != nil && l.GpuBias.IsDirty() {
+				_ = l.GpuBias.SyncToHost()
+			}
+			return l.BackwardBatched(dOut, x, batchSize, shift)
+		}
 		if l.GpuWeight != nil && l.GpuWeight.IsAllocated() {
 			var gradBiasBuf *GpuBuffer
 			if l.UseBias && l.GpuBias != nil {

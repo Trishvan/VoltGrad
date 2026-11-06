@@ -1,5 +1,5 @@
 ---
-description: Frequently asked questions about VoltGrad, Vulkan hardware requirements (shaderInt64), platform support, Dynamic Bit Widening, and troubleshooting.
+description: Frequently asked questions about VoltGrad, Vulkan hardware requirements, dual-path 32-bit and 64-bit execution, platform support, Dynamic Bit Widening, and troubleshooting.
 ---
 
 # FAQ
@@ -7,10 +7,14 @@ description: Frequently asked questions about VoltGrad, Vulkan hardware requirem
 ## Hardware and platform
 
 **Which GPUs are supported?**
-Any device with a Vulkan 1.1+ driver that reports the `shaderInt64` capability. Discovery enumerates every Vulkan device present and requires this feature — Intel, AMD, NVIDIA discrete and integrated GPUs are typical; Apple Silicon works through MoltenVK.
+Any device with a Vulkan 1.0+ driver supporting compute queues. VoltGrad automatically discovers available hardware and selects between two optimized execution paths:
+- **64-bit Native Path**: Used when the GPU supports `shaderInt64`, enabling native 64-bit integer compute shader operations and bit-widths up to 64 bits ($W \le 64$).
+- **32-bit Core Path**: Used when `shaderInt64` is unavailable (or forced via `Force32Bit: true`), running pure GLSL 4.50 compute shaders with exact 64-bit register accumulation and 50% lower VRAM footprint ($W \le 32$).
+
+Intel, AMD, NVIDIA discrete and integrated GPUs, as well as Apple Silicon through MoltenVK, are supported.
 
 **If I have two GPUs, which one is used?**
-The best-scoring device: discrete GPUs rank highest, then integrated, then virtual GPUs, then CPU rasterizers, and among equals the first enumerated wins. Multi-device training is not supported yet; exactly one device is opened per pipeline.
+The best-scoring device: discrete GPUs rank highest (+1000), integrated (+500), virtual GPUs (+200), CPU rasterizers (+100), with a +500 preference bonus for hardware `shaderInt64` support. Multi-device training is not supported yet; exactly one device is opened per pipeline.
 
 **Do I need the Vulkan SDK installed to use VoltGrad?**
 No. The library loads the Vulkan runtime that ships with your GPU drivers (or MoltenVK), and all compute kernels ship precompiled inside the package. The SDK (or `glslc`/`glslangValidator`) is only needed to recompile shaders when you modify the GLSL sources — see [Shader Reference](../voltgrad/shaders/README.md).
@@ -18,8 +22,8 @@ No. The library loads the Vulkan runtime that ships with your GPU drivers (or Mo
 **Does it work without cgo?**
 Yes. Windows uses the Go standard library's syscall loader; Linux and macOS use `github.com/ebitengine/purego` for dynamic loading. No C compiler or CGO is required on any platform.
 
-**Why is `shaderInt64` mandatory?**
-Parameter updates, gradient accumulation, and the optimizer run in 64-bit integer arithmetic so that large-magnitude values never truncate — that is the foundation of the zero-clipping guarantee. The feature gate keeps GPU and CPU bit-for-bit identical by contract instead of by luck.
+**Is `shaderInt64` mandatory?**
+No. In accordance with [ADR-0002](adr/0002-dual-path-execution-and-optional-shaderint64.md), `shaderInt64` is an optional capability. On GPUs without `shaderInt64`, VoltGrad executes via the pure 32-bit core path, computing exact 64-bit intermediate products and sums via core GLSL `imulExtended` and `uaddCarry`. If a tensor requires $>32$ bits on a 32-bit GPU, it gracefully routes through the exact 64-bit CPU reference implementation without runtime errors.
 
 ## Arithmetic and DBW
 
@@ -66,8 +70,8 @@ Device and kernel initialization happen at pipeline construction, and the first 
 
 ## Errors and troubleshooting
 
-**`no compatible Vulkan compute device with shaderInt64 found`**
-No GPU passed the compute-queue plus `shaderInt64` gate. Update drivers, verify with `vulkaninfo`, or run on different hardware.
+**`no compatible Vulkan compute device found`**
+No GPU with compute queues was detected by the Vulkan loader. Update drivers, verify with `vulkaninfo`, or ensure Vulkan runtime libraries are installed.
 
 **`vulkan-1.dll dynamic load failure` / `failed loading Vulkan shared library (...)`**
 The Vulkan loader is missing or not on the search path (Windows driver repair; install `libvulkan1` on Linux; MoltenVK on macOS). This is an environment issue, not a library defect.
@@ -78,8 +82,8 @@ The Vulkan loader is missing or not on the search path (Windows driver repair; i
 **Training runs but loss does not fall**
 Check conversion to Q16 (learning-rate 655 ≈ 0.01), that `ZeroGrad()` zeroes every gradient tensor, that `Gradients()` matches `Parameters()` pairwise, and that scratch values are stored before they are needed in `Backward`. Nothing widens and nothing falls typically means dead gradients.
 
-**GPU tests fail on machines without a discrete GPU**
-They are hardware tests by design: the parity and pipeline tests require a `shaderInt64` device. Compile-only validation (`go build ./...`) works everywhere.
+**GPU tests skip on machines without a usable GPU**
+Hardware-dependent tests detect whether a usable Vulkan compute device is present. If Vulkan initialization fails (e.g. headless CI runners without software Vulkan emulation like Lavapipe), integration tests automatically skip while pure Go unit and CPU parity tests pass.
 
 ## Project
 
@@ -87,4 +91,6 @@ They are hardware tests by design: the parity and pipeline tests require a `shad
 GLSL sources live in `voltgrad/shaders/*.comp` with their SPIR-V binaries committed alongside. Recompile with `go run ./cmd/compileshaders` after editing sources, and commit both together — the CI verifies the `.comp` files keep compiling.
 
 **Where do design decisions get recorded?**
-Architecture Decision Records live in `docs/adr/`. [ADR-0001](adr/0001-tensor-wise-dynamic-bit-widening.md) covers the tensor-vs-block DBW decision and the parity-first principle that shapes all numeric code.
+Architecture Decision Records live in `docs/adr/`:
+- [ADR-0001](adr/0001-tensor-wise-dynamic-bit-widening.md): Tensor-Wise Dynamic Bit Widening (DBW) Architecture Decision.
+- [ADR-0002](adr/0002-dual-path-execution-and-optional-shaderint64.md): Dual-Path 32-bit and 64-bit Execution Architecture with Optional shaderInt64.

@@ -78,10 +78,6 @@ func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) 
 
 	opt.steps++
 	var wideningNotices []string
-	lr := int64(opt.config.LearningRateQ16)
-	beta := int64(opt.config.MomentumBeta)
-	one := int64(1 << opt.config.FractionalBits)
-	shift := opt.config.FractionalBits
 
 	for pIdx := 0; pIdx < len(params); pIdx++ {
 		p := params[pIdx]
@@ -92,59 +88,64 @@ func (opt *DynamicBitOptimizer) Step(model ModelArchitecture) ([]string, error) 
 			return nil, fmt.Errorf("param tensor %d len %d != grad len %d", pIdx, p.Len(), g.Len())
 		}
 
-		oldBits := p.BitWidth()
-
-		for i := 0; i < p.Len(); i++ {
-			gradVal := g.Get(i)
-			currW := p.Get(i)
-
-			var updateStep int64
-
-			switch opt.config.Type {
-			case OptimizerSGD:
-				// update = (lr * grad) >> shift
-				updateStep = (lr * gradVal) >> shift
-
-			case OptimizerSGDMomentum:
-				// v(t+1) = (beta * v(t) + (one - beta) * grad) >> shift
-				oldV := v.Get(i)
-				newV := ((beta * oldV) + ((one - beta) * gradVal)) >> shift
-				v.Set(i, newV)
-				updateStep = (lr * newV) >> shift
-
-			case OptimizerAdamQ:
-				// Pure integer momentum approximation
-				oldV := v.Get(i)
-				newV := ((beta * oldV) + ((one - beta) * gradVal)) >> shift
-				v.Set(i, newV)
-				// Signed directional step
-				sign := int64(0)
-				if newV > 0 {
-					sign = 1
-				} else if newV < 0 {
-					sign = -1
-				}
-				updateStep = (lr * sign) >> 1
-			}
-
-			// Weight decay (L2)
-			if opt.config.WeightDecayQ16 > 0 {
-				decay := (int64(opt.config.WeightDecayQ16) * currW) >> shift
-				currW -= decay
-			}
-
-			// Parameter update with auto-widening on overflow
-			newW := currW - updateStep
-			p.Set(i, newW)
-		}
-
-		newBits := p.BitWidth()
-		if newBits > oldBits {
-			wideningNotices = append(wideningNotices, fmt.Sprintf("Param[%d]: DBW extended %d bits -> %d bits (Zero Clipping)", pIdx, oldBits, newBits))
+		if notice := opt.stepParamCPU(pIdx, p, g, v); notice != "" {
+			wideningNotices = append(wideningNotices, notice)
 		}
 	}
 
 	return wideningNotices, nil
+}
+
+func (opt *DynamicBitOptimizer) stepParamCPU(pIdx int, p, g, v *DynamicBitTensor) string {
+	lr := int64(opt.config.LearningRateQ16)
+	beta := int64(opt.config.MomentumBeta)
+	one := int64(1 << opt.config.FractionalBits)
+	shift := opt.config.FractionalBits
+	oldBits := p.BitWidth()
+
+	for i := 0; i < p.Len(); i++ {
+		gradVal := g.Get(i)
+		currW := p.Get(i)
+
+		var updateStep int64
+
+		switch opt.config.Type {
+		case OptimizerSGD:
+			updateStep = (lr * gradVal) >> shift
+
+		case OptimizerSGDMomentum:
+			oldV := v.Get(i)
+			newV := ((beta * oldV) + ((one - beta) * gradVal)) >> shift
+			v.Set(i, newV)
+			updateStep = (lr * newV) >> shift
+
+		case OptimizerAdamQ:
+			oldV := v.Get(i)
+			newV := ((beta * oldV) + ((one - beta) * gradVal)) >> shift
+			v.Set(i, newV)
+			sign := int64(0)
+			if newV > 0 {
+				sign = 1
+			} else if newV < 0 {
+				sign = -1
+			}
+			updateStep = (lr * sign) >> 1
+		}
+
+		if opt.config.WeightDecayQ16 > 0 {
+			decay := (int64(opt.config.WeightDecayQ16) * currW) >> shift
+			currW -= decay
+		}
+
+		newW := currW - updateStep
+		p.Set(i, newW)
+	}
+
+	newBits := p.BitWidth()
+	if newBits > oldBits {
+		return fmt.Sprintf("Param[%d]: DBW extended %d bits -> %d bits (Zero Clipping)", pIdx, oldBits, newBits)
+	}
+	return ""
 }
 
 // StepCtx performs an optimization step using GPU acceleration if available in ctx, or falls back to CPU.
@@ -171,6 +172,18 @@ func (opt *DynamicBitOptimizer) StepGPU(gpu *GpuEngine, model ModelArchitecture)
 		p := params[pIdx]
 		g := grads[pIdx]
 		v := opt.velocities[0][pIdx]
+
+		// Dynamic precision check: if tensor bit-width exceeds 32 bits on a 32-bit GPU device,
+		// gracefully route the parameter update through the exact 64-bit CPU reference implementation.
+		if !gpu.HardwareContext().Is64Bit() && p.BitWidth() > 32 {
+			if pt := p.PersistentGPU(); pt != nil && pt.IsAllocated() {
+				_ = pt.SyncToHost()
+			}
+			if notice := opt.stepParamCPU(pIdx, p, g, v); notice != "" {
+				wideningNotices = append(wideningNotices, notice)
+			}
+			continue
+		}
 
 		if pt := p.PersistentGPU(); pt != nil && pt.IsAllocated() {
 			oldBits := p.BitWidth()

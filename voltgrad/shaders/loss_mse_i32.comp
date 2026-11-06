@@ -1,0 +1,35 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer InPreds { int preds[]; };
+layout(std430, binding = 1) readonly buffer InTargets { int targets[]; };
+layout(std430, binding = 2) writeonly buffer OutGrad { int grad[]; };
+layout(std430, binding = 3) writeonly buffer OutLoss { int loss[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint count;
+    uint shift;
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.count) return;
+    
+    int diff = preds[idx] - targets[idx];
+    grad[idx] = diff;
+    
+    int hi;
+    int lo;
+    imulExtended(diff, diff, hi, lo);
+    
+    int l = 0;
+    if (pc.shift == 0u) {
+        l = lo;
+    } else if (pc.shift < 32u) {
+        l = (hi << (32u - pc.shift)) | int(uint(lo) >> pc.shift);
+    } else {
+        l = hi >> (pc.shift - 32u);
+    }
+    loss[idx] = l;
+}

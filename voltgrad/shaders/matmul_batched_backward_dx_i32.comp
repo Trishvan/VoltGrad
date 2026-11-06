@@ -1,0 +1,84 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer InBatchDOut { int d_out[]; };
+layout(std430, binding = 1) readonly buffer InW { uint packed_w[]; };
+layout(std430, binding = 2) writeonly buffer OutBatchDX { int d_x[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint in_dim;
+    uint out_dim;
+    uint batch_size;
+    uint bit_width;
+    uint shift;
+} pc;
+
+int unpack_weight_32(uint idx, uint w_bits) {
+    uint bit_offset = idx * w_bits;
+    uint word_idx = bit_offset / 32u;
+    uint bit_in_word = bit_offset % 32u;
+    
+    uint raw = packed_w[word_idx] >> bit_in_word;
+    uint bits_in_first = 32u - bit_in_word;
+    if (w_bits > bits_in_first) {
+        raw |= (packed_w[word_idx + 1u] << bits_in_first);
+    }
+    
+    if (w_bits < 32u) {
+        uint mask = (1u << w_bits) - 1u;
+        raw &= mask;
+        uint sign_bit = 1u << (w_bits - 1u);
+        if ((raw & sign_bit) != 0u) {
+            raw |= ~mask;
+        }
+    }
+    return int(raw);
+}
+
+void accum_add(inout int hi, inout uint lo, int a_hi, uint a_lo) {
+    uint c;
+    lo = uaddCarry(lo, a_lo, c);
+    hi += a_hi + int(c);
+}
+
+int shift_and_clamp(int hi, uint lo, uint shift) {
+    if (shift == 0u) {
+        if (hi > 0 || (hi == 0 && lo > 2147483647u)) return 2147483647;
+        if (hi < -1 || (hi == -1 && lo < 2147483648u)) return -2147483648;
+        return int(lo);
+    }
+    int max_hi = (1 << (shift - 1u)) - 1;
+    int min_hi = -(1 << (shift - 1u));
+    if (hi > max_hi) return 2147483647;
+    if (hi < min_hi) return -2147483648;
+    int res = (hi << (32u - shift)) | int(lo >> shift);
+    if (hi == max_hi && res < 0) return 2147483647;
+    if (hi == min_hi && res >= 0) return -2147483648;
+    return res;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint total = pc.batch_size * pc.in_dim;
+    if (idx >= total) return;
+    
+    uint b = idx / pc.in_dim;
+    uint c = idx % pc.in_dim;
+    
+    int accum_hi = 0;
+    uint accum_lo = 0u;
+    uint d_out_offset = b * pc.out_dim;
+    
+    for (uint r = 0u; r < pc.out_dim; r++) {
+        uint w_idx = r * pc.in_dim + c;
+        int w = unpack_weight_32(w_idx, pc.bit_width);
+        int d = d_out[d_out_offset + r];
+        int prod_hi;
+        int prod_lo;
+        imulExtended(d, w, prod_hi, prod_lo);
+        accum_add(accum_hi, accum_lo, prod_hi, uint(prod_lo));
+    }
+    
+    d_x[idx] = shift_and_clamp(accum_hi, accum_lo, pc.shift);
+}

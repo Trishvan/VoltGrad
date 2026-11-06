@@ -1,0 +1,36 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer InWeights { int weights[]; };
+layout(std430, binding = 1) buffer OutPacked { uint packed_data[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint count;
+    uint bit_width;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+    
+    int val = weights[i];
+    uint raw = uint(val);
+    if (pc.bit_width < 32u) {
+        uint mask = (1u << pc.bit_width) - 1u;
+        raw &= mask;
+    }
+    
+    uint bit_offset = i * pc.bit_width;
+    uint word_idx = bit_offset / 32u;
+    uint bit_in_word = bit_offset % 32u;
+    
+    uint w0 = raw << bit_in_word;
+    atomicOr(packed_data[word_idx], w0);
+    
+    uint bits_in_w0 = 32u - bit_in_word;
+    if (pc.bit_width > bits_in_w0) {
+        uint w1 = raw >> bits_in_w0;
+        atomicOr(packed_data[word_idx + 1u], w1);
+    }
+}

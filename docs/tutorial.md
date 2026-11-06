@@ -4,7 +4,7 @@ description: Step-by-step tutorial for building, training, and evaluating a neur
 
 # Tutorial: Training Your First Model
 
-This tutorial builds, trains, and inspects a small network from scratch. It assumes the [Getting Started](getting-started.md) requirements are met (Go, a Vulkan device with `shaderInt64`, GPU drivers).
+This tutorial builds, trains, and inspects a small network from scratch. It assumes the [Getting Started](getting-started.md) requirements are met (Go, a Vulkan compute device, GPU drivers).
 
 What you will do:
 

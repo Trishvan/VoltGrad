@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"unsafe"
@@ -24,6 +25,7 @@ type DeviceReport struct {
 	APIVersion       string
 	DriverVersion    string
 	HasShaderInt64   bool
+	Is64BitExecution bool
 	TimestampPeriod  float32
 	MemoryHeaps      []MemoryHeapReport
 	TotalDeviceLocal uint64
@@ -44,6 +46,7 @@ func (r DeviceReport) String() string {
 	sb.WriteString(fmt.Sprintf("Vendor: %s [0x%04X] | DeviceID: 0x%04X\n", r.VendorName, r.VendorID, r.DeviceID))
 	sb.WriteString(fmt.Sprintf("Vulkan API: %s | Driver Version: %s\n", r.APIVersion, r.DriverVersion))
 	sb.WriteString(fmt.Sprintf("Hardware 64-bit Shader Integers (shaderInt64): %v\n", r.HasShaderInt64))
+	sb.WriteString(fmt.Sprintf("Active Execution Path: %s (Max GPU Width: %d-bit)\n", map[bool]string{true: "64-bit Native", false: "32-bit Core"}[r.Is64BitExecution], map[bool]int{true: 64, false: 32}[r.Is64BitExecution]))
 	sb.WriteString(fmt.Sprintf("Timestamp Period: %.2f ns/tick\n", r.TimestampPeriod))
 	sb.WriteString(fmt.Sprintf("Memory Heaps (%d total):\n", len(r.MemoryHeaps)))
 	for _, h := range r.MemoryHeaps {
@@ -92,6 +95,12 @@ func vendorName(id uint32) string {
 	}
 }
 
+// HardwareOptions specifies configuration preferences for Vulkan device discovery and execution path.
+type HardwareOptions struct {
+	// Force32Bit forces the 32-bit GPU execution path even if the physical GPU supports shaderInt64.
+	Force32Bit bool
+}
+
 // HardwareContext encapsulates low-level Vulkan instance, device, and compute queues.
 type HardwareContext struct {
 	loader *platformLoader
@@ -104,19 +113,30 @@ type HardwareContext struct {
 	memProps        VkPhysicalDeviceMemoryProperties
 	deviceReport    DeviceReport
 	hasShaderInt64  bool
+	is64Bit         bool
+	force32Bit      bool
 	timestampPeriod float32
 	pool            *BufferPool
 }
 
 // NewHardwareContext discovers and initializes the system's Vulkan compute device using a cross-platform loader.
+// By default, it automatically selects 64-bit execution if the GPU supports shaderInt64, or 32-bit otherwise.
 func NewHardwareContext() (*HardwareContext, error) {
+	return NewHardwareContextWithOptions(HardwareOptions{
+		Force32Bit: os.Getenv("VOLTGRAD_FORCE_32BIT") == "1",
+	})
+}
+
+// NewHardwareContextWithOptions initializes the Vulkan compute device with custom options (e.g. forcing 32-bit execution path).
+func NewHardwareContextWithOptions(opts HardwareOptions) (*HardwareContext, error) {
 	loader, err := newPlatformLoader()
 	if err != nil {
 		return nil, err
 	}
 
 	ctx := &HardwareContext{
-		loader: loader,
+		loader:     loader,
+		force32Bit: opts.Force32Bit,
 	}
 
 	if err := ctx.initDevice(); err != nil {
@@ -173,15 +193,14 @@ func (c *HardwareContext) initDevice() error {
 	bestScore := -1
 	bestDev := uintptr(0)
 	bestQueueFam := -1
+	bestHas64 := false
 	var bestPropsBuf []byte
 
 	for _, dev := range physDevs {
-		// 1. Must support mandatory shaderInt64
+		// 1. Query physical device features: shaderInt64 is optional
 		var feats VkPhysicalDeviceFeatures
 		vkSyscall(getFeats, dev, uintptr(unsafe.Pointer(&feats)))
-		if feats.ShaderInt64 == 0 {
-			continue
-		}
+		has64 := feats.ShaderInt64 != 0
 
 		// 2. Must support compute queue
 		var qCount uint32
@@ -204,6 +223,7 @@ func (c *HardwareContext) initDevice() error {
 		}
 
 		// 3. Score device: Discrete GPU (1000) > Integrated GPU (500) > Virtual (200) > CPU (100)
+		// Give bonus for shaderInt64 hardware capability (+500)
 		propsBuf := make([]byte, 1024)
 		vkSyscall(getProps, dev, uintptr(unsafe.Pointer(&propsBuf[0])))
 		deviceType := binary.LittleEndian.Uint32(propsBuf[16:20])
@@ -219,22 +239,31 @@ func (c *HardwareContext) initDevice() error {
 		case 4: // CPU
 			score = 100
 		}
+		if has64 {
+			score += 500
+		}
 
 		if score > bestScore {
 			bestScore = score
 			bestDev = dev
 			bestQueueFam = computeFam
 			bestPropsBuf = propsBuf
+			bestHas64 = has64
 		}
 	}
 
 	if bestDev == 0 || bestQueueFam == -1 {
-		return errors.New("no compatible Vulkan compute device with shaderInt64 found")
+		return errors.New("no compatible Vulkan compute device found")
 	}
 
 	c.physDev = bestDev
 	c.queueFam = uint32(bestQueueFam)
-	c.hasShaderInt64 = true
+	c.hasShaderInt64 = bestHas64
+	if c.force32Bit {
+		c.is64Bit = false
+	} else {
+		c.is64Bit = bestHas64
+	}
 
 	priority := float32(1.0)
 	queueCI := VkDeviceQueueCreateInfo{
@@ -244,8 +273,9 @@ func (c *HardwareContext) initDevice() error {
 		PQueuePriorities: &priority,
 	}
 
-	enabledFeatures := VkPhysicalDeviceFeatures{
-		ShaderInt64: 1,
+	var enabledFeatures VkPhysicalDeviceFeatures
+	if c.is64Bit {
+		enabledFeatures.ShaderInt64 = 1
 	}
 
 	deviceCI := VkDeviceCreateInfo{
@@ -293,15 +323,16 @@ func (c *HardwareContext) initDevice() error {
 		c.timestampPeriod = period
 
 		c.deviceReport = DeviceReport{
-			DeviceName:      devName,
-			DeviceType:      deviceTypeName(devType),
-			VendorID:        vendID,
-			VendorName:      vendorName(vendID),
-			DeviceID:        devID,
-			APIVersion:      fmt.Sprintf("%d.%d.%d", apiVer>>22, (apiVer>>12)&0x3ff, apiVer&0xfff),
-			DriverVersion:   fmt.Sprintf("%d.%d.%d", drvVer>>22, (drvVer>>12)&0x3ff, drvVer&0xfff),
-			HasShaderInt64:  true,
-			TimestampPeriod: period,
+			DeviceName:       devName,
+			DeviceType:       deviceTypeName(devType),
+			VendorID:         vendID,
+			VendorName:       vendorName(vendID),
+			DeviceID:         devID,
+			APIVersion:       fmt.Sprintf("%d.%d.%d", apiVer>>22, (apiVer>>12)&0x3ff, apiVer&0xfff),
+			DriverVersion:    fmt.Sprintf("%d.%d.%d", drvVer>>22, (drvVer>>12)&0x3ff, drvVer&0xfff),
+			HasShaderInt64:   c.hasShaderInt64,
+			Is64BitExecution: c.is64Bit,
+			TimestampPeriod:  period,
 		}
 
 		for i := uint32(0); i < c.memProps.MemoryHeapCount; i++ {
@@ -336,9 +367,22 @@ func (c *HardwareContext) TimestampPeriod() float32 {
 	return c.timestampPeriod
 }
 
-// HasShaderInt64 returns true if 64-bit integer compute shader operations are enabled and validated on the hardware.
+// HasShaderInt64 returns true if 64-bit integer compute shader operations are supported by the physical hardware.
 func (c *HardwareContext) HasShaderInt64() bool {
 	return c.hasShaderInt64
+}
+
+// Is64Bit returns true if 64-bit GPU execution is enabled (physical GPU supports shaderInt64 and Force32Bit is not set).
+func (c *HardwareContext) Is64Bit() bool {
+	return c.is64Bit
+}
+
+// MaxGpuBitWidth returns the maximum bit-width natively supported by the active GPU execution path (64 or 32).
+func (c *HardwareContext) MaxGpuBitWidth() int {
+	if c.is64Bit {
+		return 64
+	}
+	return 32
 }
 
 func (c *HardwareContext) findMemoryType(typeBits uint32, properties uint32) int {

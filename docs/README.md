@@ -21,4 +21,5 @@ VoltGrad is a self-contained Go library for training neural networks on Vulkan-c
 - [Project README](../README.md) — project overview, architecture table, roadmap.
 - [Contributing Guide](../CONTRIBUTING.md) — development environment, invariants, and open community tasks.
 - [ADR-0001: Tensor-Wise DBW](adr/0001-tensor-wise-dynamic-bit-widening.md) — the architectural decision record for the widening model.
+- [ADR-0002: Dual-Path Execution](adr/0002-dual-path-execution-and-optional-shaderint64.md) — the architectural decision record for optional shaderInt64 and dual 32-bit/64-bit GPU paths.
 - [Shader Reference](../voltgrad/shaders/README.md) — the Vulkan compute kernels bundled with the library, and how to recompile them.

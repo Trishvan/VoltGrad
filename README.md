@@ -227,12 +227,17 @@ VoltGrad adheres to strict open-source design principles formalized in our Archi
   - **Strict CPU/GPU parity**: Both backends yield bit-for-bit identical integers across all widths ($W \in [2, 64]$).
   - **Correctness and maintainability over theoretical micro-compression**: Optimizes for open-source community maintainability, reproducible debugging, and numerical rock-solid stability.
 
+- **[ADR-0002: Dual-Path 32-bit and 64-bit Execution](docs/adr/0002-dual-path-execution-and-optional-shaderint64.md)**: Makes `shaderInt64` an optional device capability and provides separate 32-bit and 64-bit GPU execution paths.
+  - **Universal GPU compatibility**: Extends hardware acceleration from workstation GPUs down to integrated GPUs (Intel Iris Xe, AMD APUs) and virtual GPUs without requiring `shaderInt64`.
+  - **50% VRAM footprint reduction**: The 32-bit core path preallocates 16 bytes/element (half the 32 bytes/element in 64-bit mode).
+  - **Dynamic precision selection & graceful fallback**: Tensors up to 32 bits run accelerated on GPU; tensors requiring $> 32$ bits on a 32-bit GPU seamlessly fall back to the exact 64-bit CPU reference implementation without error.
+
 ---
 
 ## 🗺️ Roadmap
 
 ### VoltGrad 0.2 — GPU execution and numerical correctness (Priority 1)
-- [x] Enable and validate shaderInt64 (queried via `vkGetPhysicalDeviceFeatures` and enabled in `VkDeviceCreateInfo`).
+- [x] Enable and validate shaderInt64 (optional capability queried via `vkGetPhysicalDeviceFeatures` and enabled in `VkDeviceCreateInfo`).
 - [x] Fix GPU/CPU optimizer discrepancies (64-bit precision MAC, weight decay, Adam-Q signed directional steps).
 - [x] Add 64-bit DBW correctness tests (validating values through 64 bits and `math.MaxInt64`).
 - [x] Add overflow and boundary tests (validating range limits and byte-boundary transitions).
@@ -249,6 +254,7 @@ VoltGrad adheres to strict open-source design principles formalized in our Archi
 
 ### VoltGrad 0.4 — Adaptive computing
 - [x] Tensor-wise DBW architectural standardization ([ADR-0001](docs/adr/0001-tensor-wise-dynamic-bit-widening.md)).
+- [x] Dual-path 32-bit and 64-bit execution with optional `shaderInt64` ([ADR-0002](docs/adr/0002-dual-path-execution-and-optional-shaderint64.md)).
 - [ ] Mixed-precision execution.
 - [ ] Adaptive precision policies.
 - [ ] Fused neural-network operations.

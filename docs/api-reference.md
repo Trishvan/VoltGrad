@@ -323,11 +323,18 @@ func (p *VulkanTrainingPipeline) Close()
 ## 9. Hardware and buffers
 
 ```go
+type HardwareOptions struct {
+    Force32Bit bool // Forces 32-bit execution path even if physical GPU supports shaderInt64
+}
+
 type HardwareContext struct { /* opaque */ }
 
 func NewHardwareContext() (*HardwareContext, error)
+func NewHardwareContextWithOptions(opts HardwareOptions) (*HardwareContext, error)
 
-func (c *HardwareContext) HasShaderInt64() bool // true after successful init
+func (c *HardwareContext) HasShaderInt64() bool  // true if physical GPU supports shaderInt64
+func (c *HardwareContext) Is64Bit() bool         // true if 64-bit execution path is active
+func (c *HardwareContext) MaxGpuBitWidth() int   // 64 for 64-bit native path, 32 for 32-bit core path
 func (c *HardwareContext) DeviceReport() DeviceReport
 func (c *HardwareContext) CreateHostCoherentBuffer(size uint64) (*GpuBuffer, error)
 func (c *HardwareContext) GetPooledBuffer(size uint64) (*GpuBuffer, error)
@@ -335,7 +342,10 @@ func (c *HardwareContext) BufferPool() *BufferPool
 func (c *HardwareContext) Close() error
 ```
 
-Device discovery enumerates all physical devices, requires a compute queue and the `shaderInt64` feature, and selects the best by type score (discrete > integrated > virtual > CPU). `CreateHostCoherentBuffer` maps host-visible + host-coherent memory (zero-copy CPU/GPU sharing); failures roll back all intermediate Vulkan resources.
+Device discovery enumerates all physical compute devices. Unlike legacy versions, hardware `shaderInt64` is now an optional capability rather than a mandatory requirement:
+- On GPUs supporting `shaderInt64`, VoltGrad initializes the **64-bit Native Execution Path** ($W \le 64$), preallocating 32 bytes/element.
+- On GPUs without `shaderInt64` (or when `Force32Bit: true` or `VOLTGRAD_FORCE_32BIT=1`), VoltGrad initializes the **32-bit Core Execution Path** ($W \le 32$) with 50% lower VRAM preallocation (16 bytes/element).
+- If Dynamic Bit Widening (DBW) causes a tensor to exceed 32 bits on a 32-bit device, operations gracefully and automatically fall back to the exact 64-bit CPU reference without error (see ADR-0002).
 
 ```go
 type DeviceReport struct {
@@ -347,6 +357,7 @@ type DeviceReport struct {
     APIVersion       string
     DriverVersion    string
     HasShaderInt64   bool
+    Is64BitExecution bool
     MemoryHeaps      []MemoryHeapReport
     TotalDeviceLocal uint64
     TotalHostVisible uint64

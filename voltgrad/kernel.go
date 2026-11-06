@@ -41,6 +41,35 @@ var optimizerStepSPV []byte
 //go:embed shaders/repack_dbw.spv
 var repackDbwSPV []byte
 
+// 32-bit execution path compute shaders (Vulkan 1.0 without shaderInt64)
+
+//go:embed shaders/matmul_forward_i32.spv
+var matmulForwardI32SPV []byte
+
+//go:embed shaders/matmul_backward_dx_i32.spv
+var matmulBackwardDxI32SPV []byte
+
+//go:embed shaders/matmul_backward_dw_i32.spv
+var matmulBackwardDwI32SPV []byte
+
+//go:embed shaders/matmul_batched_forward_i32.spv
+var matmulBatchedForwardI32SPV []byte
+
+//go:embed shaders/matmul_batched_backward_dx_i32.spv
+var matmulBatchedBackwardDxI32SPV []byte
+
+//go:embed shaders/matmul_batched_backward_dw_i32.spv
+var matmulBatchedBackwardDwI32SPV []byte
+
+//go:embed shaders/loss_mse_i32.spv
+var lossMseI32SPV []byte
+
+//go:embed shaders/optimizer_step_i32.spv
+var optimizerStepI32SPV []byte
+
+//go:embed shaders/repack_dbw_i32.spv
+var repackDbwI32SPV []byte
+
 // ComputeKernel manages a Vulkan compute pipeline for a specific SPIR-V shader.
 type ComputeKernel struct {
 	hw           *HardwareContext

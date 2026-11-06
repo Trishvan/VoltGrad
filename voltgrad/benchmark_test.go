@@ -684,3 +684,131 @@ func BenchmarkTrainingStep_LargeModel_GPUPersistent(b *testing.B) {
 		}
 	}
 }
+
+// Benchmark32BitGPUMatMul measures GEMM latency on the 32-bit GPU execution path.
+func Benchmark32BitGPUMatMul(b *testing.B) {
+	hw, err := NewHardwareContextWithOptions(HardwareOptions{Force32Bit: true})
+	if err != nil {
+		b.Skipf("Skipping Vulkan benchmark: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		b.Fatalf("Failed to init GPU engine: %v", err)
+	}
+	defer gpu.Close()
+
+	inDim, outDim := 64, 64
+	w := NewDynamicBitTensor([]int{outDim, inDim}, 8)
+	for i := 0; i < w.Len(); i++ {
+		w.Set(i, int64((i%15)-7))
+	}
+	x := make([]int32, inDim)
+	for i := range x {
+		x[i] = int32((i % 20) - 10)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := gpu.MatMulForward(w, x, nil, 16); err != nil {
+			b.Fatalf("MatMulForward failed: %v", err)
+		}
+	}
+}
+
+// Benchmark32BitBatchedGEMMResident measures batched resident GEMM latency on the 32-bit GPU path.
+func Benchmark32BitBatchedGEMMResident(b *testing.B) {
+	hw, err := NewHardwareContextWithOptions(HardwareOptions{Force32Bit: true})
+	if err != nil {
+		b.Skipf("Skipping Vulkan benchmark: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		b.Fatalf("Failed to init GPU engine: %v", err)
+	}
+	defer gpu.Close()
+
+	inDim, outDim, batchSize := 128, 128, 64
+	w := NewDynamicBitTensor([]int{outDim, inDim}, 8)
+	for i := 0; i < w.Len(); i++ {
+		w.Set(i, int64((i%15)-7))
+	}
+
+	pt, err := NewPersistentGpuTensor(hw, w)
+	if err != nil {
+		b.Fatalf("NewPersistentGpuTensor failed: %v", err)
+	}
+	defer pt.Free()
+
+	flatX := make([]int32, batchSize*inDim)
+	for i := range flatX {
+		flatX[i] = int32((i % 20) - 10)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := gpu.MatMulBatchedForwardResident(pt.BufferPacked(), nil, flatX, batchSize, outDim, inDim, w.BitWidth(), 16); err != nil {
+			b.Fatalf("MatMulBatchedForwardResident failed: %v", err)
+		}
+	}
+}
+
+// Benchmark32BitTrainingStepResident measures full end-to-end training iteration on 32-bit GPU path.
+func Benchmark32BitTrainingStepResident(b *testing.B) {
+	hw, err := NewHardwareContextWithOptions(HardwareOptions{Force32Bit: true})
+	if err != nil {
+		b.Skipf("Skipping Vulkan benchmark: %v", err)
+	}
+	defer hw.Close()
+
+	gpu, err := NewGpuEngine(hw)
+	if err != nil {
+		b.Fatalf("Failed to init GPU engine: %v", err)
+	}
+	defer gpu.Close()
+
+	batchSize := 64
+	model := NewBenchmarkMLPArchitecture(128, 64, 16)
+	model.fc1.InitWeightsIdentity(Q16One)
+	model.fc2.InitWeightsIdentity(Q16One)
+	if err := model.BindGPU(hw); err != nil {
+		b.Fatalf("BindGPU failed: %v", err)
+	}
+	defer model.FreeGPU()
+
+	config := DefaultTrainingConfig()
+	opt := NewDynamicBitOptimizer(config.OptimizerConfig, model)
+	ctx := NewComputeContext(nil)
+	ctx.SetGpuEngine(gpu)
+
+	flatX := make([]int32, batchSize*128)
+	flatY := make([]int32, batchSize*16)
+	for i := range flatX {
+		flatX[i] = 32768
+	}
+	for i := range flatY {
+		flatY[i] = 65536
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		model.ZeroGrad()
+		preds, err := model.ForwardBatched(ctx, flatX, batchSize)
+		if err != nil {
+			b.Fatalf("ForwardBatched failed: %v", err)
+		}
+		_, dLoss, err := gpu.MSELoss(preds, flatY, config.OptimizerConfig.FractionalBits)
+		if err != nil {
+			b.Fatalf("MSELoss failed: %v", err)
+		}
+		if err := model.BackwardBatched(ctx, dLoss, batchSize); err != nil {
+			b.Fatalf("BackwardBatched failed: %v", err)
+		}
+		if _, err := opt.StepGPU(gpu, model); err != nil {
+			b.Fatalf("StepGPU failed: %v", err)
+		}
+	}
+}

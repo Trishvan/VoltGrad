@@ -19,7 +19,7 @@ import "github.com/Trishvan/VoltGrad/voltgrad"
 | Component | Requirement |
 | :--- | :--- |
 | Go toolchain | The module requires Go 1.27.1 (`go.mod`). Builds with older toolchains that follow the Go toolchain directive will download it automatically. |
-| GPU | A device with a Vulkan 1.1+ driver that reports the `shaderInt64` feature. This feature is mandatory; devices without it are skipped during discovery. |
+| GPU | Any device with a Vulkan 1.0+ driver supporting compute queues. GPUs with `shaderInt64` use the 64-bit native execution path; GPUs without `shaderInt64` use the 32-bit core execution path with 50% lower VRAM footprint (see [ADR-0002](adr/0002-dual-path-execution-and-optional-shaderint64.md)). |
 | GPU drivers | Windows: any recent driver installs `vulkan-1.dll` (loaded via `syscall`, no CGO). Linux: `libvulkan.so.1` or `libvulkan.so` (for example, the `libvulkan1` package plus a Vulkan-capable Mesa/vendor driver). macOS: MoltenVK — the loader probes `libvulkan.1.dylib`, `libMoltenVK.dylib`, `/usr/local/lib/libvulkan.dylib`, and `/opt/homebrew/lib/libvulkan.dylib`. |
 
 Dependency footprint: Windows builds use only the Go standard library. Linux and macOS builds additionally use `github.com/ebitengine/purego` for dynamic loading. All shader binaries (SPIR-V) are embedded in the package, so nothing needs to be installed at runtime beyond GPU drivers.
@@ -54,7 +54,7 @@ import (
 func main() {
     hw, err := voltgrad.NewHardwareContext()
     if err != nil {
-        panic(err) // typically: no Vulkan driver, or no shaderInt64 device
+        panic(err) // typically: no Vulkan compute driver installed
     }
     defer hw.Close()
 
@@ -62,7 +62,7 @@ func main() {
 }
 ```
 
-On a healthy system this prints device name, vendor, driver and Vulkan API versions, and memory heaps. If the program panics, see the requirements table above — the most common cause is a driver without Vulkan support, or a GPU without 64-bit integer shader support.
+On a healthy system this prints device name, vendor, driver and Vulkan API versions, active execution path (64-bit native or 32-bit core), and memory heaps. If the program panics, see the requirements table above — the most common cause is a driver without Vulkan compute support.
 
 ## 5. Quick start
 
