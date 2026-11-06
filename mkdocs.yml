@@ -49,3 +49,4 @@ nav:
   - Shader Reference: shaders-reference.md
   - ADR-0001: adr/0001-tensor-wise-dynamic-bit-widening.md
   - ADR-0002: adr/0002-dual-path-execution-and-optional-shaderint64.md
+  - ADR-0003: adr/0003-polyglot-go-rust-execution-runtime.md

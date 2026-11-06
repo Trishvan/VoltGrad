@@ -94,3 +94,7 @@ GLSL sources live in `voltgrad/shaders/*.comp` with their SPIR-V binaries commit
 Architecture Decision Records live in `docs/adr/`:
 - [ADR-0001](adr/0001-tensor-wise-dynamic-bit-widening.md): Tensor-Wise Dynamic Bit Widening (DBW) Architecture Decision.
 - [ADR-0002](adr/0002-dual-path-execution-and-optional-shaderint64.md): Dual-Path 32-bit and 64-bit Execution Architecture with Optional shaderInt64.
+- [ADR-0003](adr/0003-polyglot-go-rust-execution-runtime.md): Polyglot Architecture — Go-First, Rust-Powered Execution Runtime via Purego FFI.
+
+**Why is VoltGrad adopting a polyglot architecture with Rust?**
+As detailed in [ADR-0003](adr/0003-polyglot-go-rust-execution-runtime.md), VoltGrad establishes a three-tier model: Go for user-facing API and training orchestration, Rust for the low-level Vulkan execution engine and memory management, and GLSL/SPIR-V for GPU compute. Interoperation uses `purego` dynamic linking over a C ABI, preserving VoltGrad's strict zero-CGO requirement while gaining compile-time RAII and deterministic resource safety.

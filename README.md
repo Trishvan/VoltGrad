@@ -32,7 +32,7 @@ All code lives in this standalone folder `voltgrad/` with **zero CGO, no heavywe
 | [`benchmark_test.go`](voltgrad/benchmark_test.go) | Standard Go benchmarks measuring CPU MatMul, GPU MatMul, Batched GEMM, and Persistent Tensor synchronization. |
 | [`gpu_performance_test.go`](voltgrad/gpu_performance_test.go) | Performance and parity suite for Batched GEMM, GPU Activations, MSE Loss, Asynchronous Dispatch, and Profiling. |
 | [`shaders/`](voltgrad/shaders/) | GLSL compute shader sources (GEMM forward/backward, batched GEMM, ReLU, Loss, DBW repack, Optimizer), compiled SPIR-V bytecode, and build scripts. |
-| [`docs/adr/`](docs/adr/) | Architecture Decision Records, including [ADR-0001: Tensor-Wise DBW](docs/adr/0001-tensor-wise-dynamic-bit-widening.md). |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records: [ADR-0001 (Tensor-Wise DBW)](docs/adr/0001-tensor-wise-dynamic-bit-widening.md), [ADR-0002 (Dual-Path Execution)](docs/adr/0002-dual-path-execution-and-optional-shaderint64.md), and [ADR-0003 (Polyglot Runtime)](docs/adr/0003-polyglot-go-rust-execution-runtime.md). |
 
 ---
 
@@ -231,6 +231,11 @@ VoltGrad adheres to strict open-source design principles formalized in our Archi
   - **Universal GPU compatibility**: Extends hardware acceleration from workstation GPUs down to integrated GPUs (Intel Iris Xe, AMD APUs) and virtual GPUs without requiring `shaderInt64`.
   - **50% VRAM footprint reduction**: The 32-bit core path preallocates 16 bytes/element (half the 32 bytes/element in 64-bit mode).
   - **Dynamic precision selection & graceful fallback**: Tensors up to 32 bits run accelerated on GPU; tensors requiring $> 32$ bits on a 32-bit GPU seamlessly fall back to the exact 64-bit CPU reference implementation without error.
+
+- **[ADR-0003: Polyglot Architecture — Go-First, Rust-Powered Execution Runtime](docs/adr/0003-polyglot-go-rust-execution-runtime.md)**: Establishes a three-tier polyglot runtime (Go frontend, Rust execution engine, GLSL compute shaders) connected via zero-CGO `purego` dynamic linking.
+  - **Clear language boundaries**: Go owns the public API, model definitions, and training loop; Rust owns Vulkan device lifecycles, memory allocation/pooling, synchronization, and command graphs; GLSL/SPIR-V executes on GPU hardware.
+  - **Preserves Zero-CGO**: Uses a C-compatible ABI loaded dynamically via `purego`, retaining `CGO_ENABLED=0` cross-compilation without C toolchains.
+  - **Exclusive Vulkan device ownership**: Eliminates dual-ownership lifecycle races by granting Rust exclusive ownership of Vulkan handles, exposing opaque tokens to Go.
 
 ---
 
