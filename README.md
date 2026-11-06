@@ -32,7 +32,7 @@ All code lives in this standalone folder `voltgrad/` with **zero CGO, no heavywe
 | [`benchmark_test.go`](voltgrad/benchmark_test.go) | Standard Go benchmarks measuring CPU MatMul, GPU MatMul, Batched GEMM, and Persistent Tensor synchronization. |
 | [`gpu_performance_test.go`](voltgrad/gpu_performance_test.go) | Performance and parity suite for Batched GEMM, GPU Activations, MSE Loss, Asynchronous Dispatch, and Profiling. |
 | [`shaders/`](voltgrad/shaders/) | GLSL compute shader sources (GEMM forward/backward, batched GEMM, ReLU, Loss, DBW repack, Optimizer), compiled SPIR-V bytecode, and build scripts. |
-| [`docs/adr/`](docs/adr/) | Architecture Decision Records: [ADR-0001 (Tensor-Wise DBW)](docs/adr/0001-tensor-wise-dynamic-bit-widening.md), [ADR-0002 (Dual-Path Execution)](docs/adr/0002-dual-path-execution-and-optional-shaderint64.md), and [ADR-0003 (Polyglot Runtime)](docs/adr/0003-polyglot-go-rust-execution-runtime.md). |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records: [ADR-0001 (Tensor-Wise DBW)](docs/adr/0001-tensor-wise-dynamic-bit-widening.md), [ADR-0002 (Dual-Path Execution)](docs/adr/0002-dual-path-execution-and-optional-shaderint64.md), [ADR-0003 (Polyglot Runtime)](docs/adr/0003-polyglot-go-rust-execution-runtime.md), and [ADR-0004 (Language-Independent Engine)](docs/adr/0004-language-independent-engine-and-stable-c-abi.md). |
 
 ---
 
@@ -236,6 +236,11 @@ VoltGrad adheres to strict open-source design principles formalized in our Archi
   - **Clear language boundaries**: Go owns the public API, model definitions, and training loop; Rust owns Vulkan device lifecycles, memory allocation/pooling, synchronization, and command graphs; GLSL/SPIR-V executes on GPU hardware.
   - **Preserves Zero-CGO**: Uses a C-compatible ABI loaded dynamically via `purego`, retaining `CGO_ENABLED=0` cross-compilation without C toolchains.
   - **Exclusive Vulkan device ownership**: Eliminates dual-ownership lifecycle races by granting Rust exclusive ownership of Vulkan handles, exposing opaque tokens to Go.
+
+- **[ADR-0004: Language-Independent Engine Core with Stable C-Compatible ABI & Pluggable Backends](docs/adr/0004-language-independent-engine-and-stable-c-abi.md)**: Establishes VoltGrad as **Go-first, not Go-only**.
+  - **One engine, multiple bindings**: Core compute, DBW repacking, and scheduling live in a language-agnostic engine; Go is the flagship first-class binding, with Rust and Python bindings sharing the identical engine core.
+  - **Stable C ABI with opaque handles**: Zero language-specific types in the public ABI (`VoltGradEngineHandle`, `VoltGradTensorDesc`); callers create tensors and submit batched execution graphs without copying buffers across the boundary.
+  - **Pluggable execution backends**: Decouples client bindings from Vulkan internals, paving the way for future WebGPU, Metal, and CPU reference drivers.
 
 ---
 
